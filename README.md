@@ -63,15 +63,39 @@ print(outcome.summary())
 `Stand.open` removes clean worktrees on exit and **preserves any worktree still holding
 unlanded work**, reporting them in `outcome.preserved_worktrees`.
 
-## Attaching an agent this project did not write
+## Running on a Claude Code plan instead of API tokens
+
+The default worker is a PydanticAI agent, billed per token against an API key. For a
+swarm -- N agents, each running a long tool loop over a repository -- that adds up fast.
+The alternative runs each workstream as a headless `claude -p` session, billed against a
+flat-rate plan:
+
+```bash
+uv run lj run --spec docs/specs/0002_telemetry.md \
+              --spec docs/specs/0003_ux.md \
+              --spec docs/specs/0004_errors.md \
+              --runtime claude_code
+```
+
+Three specs, three worktrees, three Claude Code sessions. Each gets an MCP config
+pointing back at the stand, so it joins the swarm rather than working blind -- it claims
+scopes, sees its peers, negotiates conflicts and enters the merge train exactly like the
+built-in worker. Set `worker_runtime` in `lumberjack.json` to make it the default.
+
+Requires the `claude` CLI on `PATH` and an active login. Note that N parallel sessions
+consume your plan's usage limits N times faster.
+
+`--spec` skips the foreman entirely: one agent per specification file, no decomposition.
+Give a goal instead if you want the plan worked out for you.
+
+## Attaching an agent you started yourself
 
 ```bash
 uv run lj serve --stand <stand-id>
 ```
 
-An MCP-capable session started inside a worktree calls `join(agent=...)` and becomes a
-first-class workstream: it claims, negotiates and lands under the same rules as the
-built-in workers.
+Any MCP-capable session calls `join(agent=...)` and becomes a first-class workstream
+under the same rules.
 
 ## Layout
 

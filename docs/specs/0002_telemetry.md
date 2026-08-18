@@ -36,6 +36,7 @@ Two deliverables, in priority order:
 # src/lumberjack/ports/telemetry.py
 AttrValue = str | int | float | bool
 
+
 class Telemetry(Protocol):
     def span(self, name: str, **attributes: AttrValue) -> AbstractContextManager[Span]: ...
     def counter(self, name: str, value: int = 1, **attributes: AttrValue) -> None: ...

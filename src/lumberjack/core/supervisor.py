@@ -23,6 +23,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 from pydantic_ai import Agent
 
+from lumberjack.adapters.claude_code import ClaudeCodeRunner
 from lumberjack.agents.deps import ForemanDeps, NegotiatorDeps, WorkerDeps
 from lumberjack.agents.foreman import build_arbiter, build_planner
 from lumberjack.agents.negotiator import build_negotiator
@@ -36,6 +37,7 @@ from lumberjack.agents.outputs import (
     WorkerOutput,
     WorkerReport,
 )
+from lumberjack.agents.runner import PydanticAiRunner
 from lumberjack.agents.scout import Scout
 from lumberjack.agents.worker import build_worker
 from lumberjack.core.arbitration import policy_for
@@ -83,6 +85,7 @@ from lumberjack.ids import (
     new_workstream_id,
 )
 from lumberjack.ports.arbitration import ArbitrationContext, ArbitrationPolicy
+from lumberjack.ports.runner import WorkerRunner
 
 __all__ = ["StandOutcome", "Supervisor", "WorkstreamOutcome"]
 
@@ -128,6 +131,7 @@ class Supervisor:
     services: Services
     policy: ArbitrationPolicy | None = None
     worker_agent: Agent[WorkerDeps, WorkerOutput] | None = None
+    runner: WorkerRunner | None = None
     planner_agent: Agent[ForemanDeps, Plan] | None = None
     arbiter_agent: Agent[ForemanDeps, ForemanRuling] | None = None
     negotiator_agent: Agent[NegotiatorDeps, NegotiationOutput] | None = None
@@ -148,12 +152,26 @@ class Supervisor:
             self.policy = policy_for(config.arbitration)
         if self.worker_agent is None:
             self.worker_agent = build_worker(model)
+        if self.runner is None:
+            self.runner = self._default_runner()
         if self.planner_agent is None:
             self.planner_agent = build_planner(foreman_model)
         if self.arbiter_agent is None:
             self.arbiter_agent = build_arbiter(foreman_model)
         if self.negotiator_agent is None:
             self.negotiator_agent = build_negotiator(model)
+
+    def _default_runner(self) -> WorkerRunner:
+        config = self.services.config
+        if config.worker_runtime == "claude_code":
+            return ClaudeCodeRunner(
+                repo=config.repo,
+                model=config.claude_model,
+                permission_mode=config.claude_permission_mode,
+                timeout_seconds=config.worker_timeout.total_seconds(),
+            )
+        assert self.worker_agent is not None
+        return PydanticAiRunner(agent=self.worker_agent)
 
     # -- setup -----------------------------------------------------------------------
 
@@ -310,7 +328,6 @@ class Supervisor:
 
     async def _work(self, workstream: Workstream, spec: TaskSpec, sensor: WorktreeSensor) -> None:
         services = self.services
-        assert self.worker_agent is not None
         running = Running(
             spec=spec,
             agent=workstream.agent,
@@ -329,16 +346,10 @@ class Supervisor:
             sensor.watch(sensor_stop), name=f"lj-sensor-{workstream.workstream_id}"
         )
         try:
-            deps = WorkerDeps(
-                services=services,
-                identity=workstream.agent,
-                workstream=workstream.workstream_id,
-                task=spec,
-                worktree=workstream.worktree,
-            )
-            result = await self.worker_agent.run(spec.intent, deps=deps)
+            assert self.runner is not None
+            output = await self.runner.run(workstream, spec, services)
             await sensor.scan()
-            await self._settle(workstream, spec, result.output)
+            await self._settle(workstream, spec, output)
         except Exception as error:
             current = services.projections.tasks.get(spec.task_id)
             if isinstance(current, Running):

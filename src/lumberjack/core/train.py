@@ -211,16 +211,22 @@ class MergeTrain:
         )
 
     async def rebase_drifted(self) -> tuple[WorkstreamId, ...]:
-        """Silently rebase clean, drifted workstreams; leave dirty ones to their agent."""
-        head = self.projections.integration_head
-        if head is None:
-            return ()
-        rebased: list[WorkstreamId] = []
-        for found in self.projections.active_workstreams():
-            drift = found.drift
-            if drift.behind < self.config.auto_rebase_after or drift.rebase_clean is not True:
-                continue
-            outcome = await self.git.rebase(found.worktree, head)
-            if outcome.ok:
-                rebased.append(found.workstream_id)
-        return tuple(rebased)
+        """Silently rebase clean, drifted workstreams; leave dirty ones to their agent.
+
+        Takes the train's lock: this rewrites worktrees, and doing so while an
+        integration is mid-rebase moves the ground under it, which surfaces as a
+        spurious bounce on work that would have landed.
+        """
+        async with self._lock:
+            head = self.projections.integration_head
+            if head is None:
+                return ()
+            rebased: list[WorkstreamId] = []
+            for found in self.projections.active_workstreams():
+                drift = found.drift
+                if drift.behind < self.config.auto_rebase_after or drift.rebase_clean is not True:
+                    continue
+                outcome = await self.git.rebase(found.worktree, head)
+                if outcome.ok:
+                    rebased.append(found.workstream_id)
+            return tuple(rebased)

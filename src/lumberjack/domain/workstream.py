@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -120,6 +120,12 @@ class StandConfig(BaseModel):
     arbitration: ArbitrationMode = ArbitrationMode.HYBRID
     model: str = "anthropic:claude-opus-5"
     foreman_model: str | None = None
+    worker_runtime: Literal["pydantic_ai", "claude_code"] = "pydantic_ai"
+    """``claude_code`` runs each workstream as a headless ``claude -p`` session, billed
+    to a flat-rate plan rather than metered API tokens.  Requires the ``claude`` CLI."""
+    claude_model: str = "opus"
+    claude_permission_mode: str = "acceptEdits"
+    worker_timeout: timedelta = timedelta(hours=1)
     worktree_root: Path = Path(".lumberjack/worktrees")
     state_root: Path = Path(".lumberjack")
     integration_prefix: str = "integration"

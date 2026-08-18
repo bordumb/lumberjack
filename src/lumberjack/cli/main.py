@@ -17,10 +17,12 @@ import cyclopts
 from lumberjack.adapters.clock import SystemClock
 from lumberjack.adapters.git_cli import GitCli
 from lumberjack.adapters.sqlite_ledger import SqliteLedger
+from lumberjack.agents.outputs import Plan
 from lumberjack.core.projections import Projections
 from lumberjack.domain.events import StandHalted
+from lumberjack.domain.task import TaskSpec
 from lumberjack.domain.workstream import ArbitrationMode, StandConfig
-from lumberjack.ids import StandId
+from lumberjack.ids import StandId, TaskId
 from lumberjack.stand import Stand
 
 __all__ = ["app", "main"]
@@ -109,15 +111,58 @@ def plan(goal: str, *, repo: Path = Path(), dry_run: bool = True) -> None:
     asyncio.run(go())
 
 
+def _plan_from_specs(repo: Path, specs: list[Path]) -> Plan:
+    """One task per spec file.
+
+    The intent names the file rather than inlining it: the agent has a worktree and can
+    read it, and a spec pasted into a prompt goes stale the moment anyone edits it.
+    """
+    tasks: list[TaskSpec] = []
+    for spec in specs:
+        path = spec if spec.is_absolute() else repo / spec
+        if not path.is_file():
+            msg = f"no such spec: {path}"
+            raise FileNotFoundError(msg)
+        relative = path.resolve().relative_to(repo.resolve()).as_posix()
+        title = path.stem.replace("_", " ")
+        tasks.append(
+            TaskSpec(
+                task_id=TaskId(path.stem),
+                title=title,
+                intent=(
+                    f"Implement the specification in `{relative}`. Read it first -- it is "
+                    "in your worktree. Follow its acceptance criteria exactly, and treat "
+                    "its 'out of scope' section as binding: other agents are implementing "
+                    "the sibling specs at the same time."
+                ),
+                acceptance=(
+                    f"every acceptance criterion in {relative} is met",
+                    "uv run ruff check . passes",
+                    "uv run ty check passes",
+                    "uv run pytest passes",
+                ),
+            )
+        )
+    return Plan(tasks=tuple(tasks), max_parallel=len(tasks))
+
+
 @app.command
 def run(
-    goal: str,
+    goal: str | None = None,
     *,
     repo: Path = Path(),
+    spec: Annotated[list[Path] | None, cyclopts.Parameter(name=["--spec"])] = None,
     n: Annotated[int | None, cyclopts.Parameter(name=["-n", "--parallel"])] = None,
     arbitration: ArbitrationMode | None = None,
+    runtime: Annotated[
+        str | None, cyclopts.Parameter(name=["--runtime"], help="pydantic_ai | claude_code")
+    ] = None,
 ) -> None:
-    """Plan and execute: N agents, N worktrees, one integration branch."""
+    """Plan and execute: N agents, N worktrees, one integration branch.
+
+    Give a goal to have the foreman decompose it, or one ``--spec`` per file to skip
+    planning entirely and put one agent on each specification.
+    """
 
     async def go() -> None:
         config = _load_config(repo)
@@ -125,9 +170,23 @@ def run(
             config = config.model_copy(update={"max_parallel": n})
         if arbitration is not None:
             config = config.model_copy(update={"arbitration": arbitration})
+        if runtime is not None:
+            config = config.model_copy(update={"worker_runtime": runtime})
+
+        plan = _plan_from_specs(repo, spec) if spec else None
+        if plan is not None and n is None:
+            config = config.model_copy(update={"max_parallel": len(plan.tasks)})
+        if goal is None and plan is None:
+            print("give a goal, or one --spec per specification file")
+            return
+        description = goal or "implement " + ", ".join(
+            item.title for item in (plan.tasks if plan else ())
+        )
+
         async with Stand.open(config) as stand:
             print(f"stand {stand.stand_id} on {config.repo}")
-            outcome = await stand.run(goal)
+            print(f"runtime: {config.worker_runtime}, up to {config.max_parallel} parallel")
+            outcome = await stand.supervisor.run(description, plan=plan)
             print(outcome.summary())
             for item in outcome.workstreams:
                 print(f"  {item.agent}  {item.task.kind:<20} {item.task.spec.title}")
