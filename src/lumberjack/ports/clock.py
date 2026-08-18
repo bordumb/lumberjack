@@ -1,0 +1,16 @@
+"""Time, injected."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from datetime import datetime, timedelta
+
+__all__ = ["Clock"]
+
+
+class Clock(Protocol):
+    def now(self) -> datetime: ...
+
+    async def sleep(self, delay: timedelta) -> None: ...
