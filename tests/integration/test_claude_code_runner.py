@@ -7,6 +7,7 @@ Anthropic's model.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import stat
 from pathlib import Path
@@ -24,6 +25,18 @@ def fake_claude(tmp_path: Path, *, body: str) -> Path:
     script.write_text(f'#!/bin/sh\nprintf \'%s\\n\' "$@" > "$0.argv"\npwd > "$0.cwd"\n{body}\n')
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
     return script
+
+
+async def still_running(pattern: str | Path) -> bool:
+    await asyncio.sleep(0.3)
+    process = await asyncio.create_subprocess_exec(
+        "pgrep",
+        "-f",
+        str(pattern),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    return await process.wait() == 0
 
 
 def argv_of(script: Path) -> list[str]:
@@ -233,3 +246,44 @@ async def test_the_worktree_stays_clean_for_the_agent(
     )
 
     assert not (await services.git.status(workstream.worktree)).dirty
+
+
+async def test_cancelling_the_task_kills_the_session(
+    services: Services, make_workstream, tmp_path: Path
+) -> None:
+    """Otherwise `lj halt` leaves a detached agent still editing a worktree.
+
+    That is the one failure mode where stopping the stand is worse than leaving it
+    running: the harness stops watching, and the session keeps writing.
+    """
+    # A distinctive duration so the grandchild is identifiable among all sleeps on
+    # the machine: killing the session but orphaning what it spawned is the bug.
+    script = fake_claude(tmp_path, body="sleep 3607")
+    workstream = await make_workstream("a")
+    spec = services.projections.specs[workstream.task]
+
+    runner = ClaudeCodeRunner(repo=services.config.repo, binary=str(script))
+    task = asyncio.create_task(runner.run(workstream, spec, services))
+    await asyncio.sleep(0.5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert not await still_running(script)
+
+
+async def test_a_timed_out_session_is_killed_too(
+    services: Services, make_workstream, tmp_path: Path
+) -> None:
+    script = fake_claude(tmp_path, body="sleep 3608")
+    workstream = await make_workstream("a")
+    spec = services.projections.specs[workstream.task]
+
+    output = await ClaudeCodeRunner(
+        repo=services.config.repo, binary=str(script), timeout_seconds=0.5
+    ).run(workstream, spec, services)
+
+    assert isinstance(output, TaskBlocked)
+    assert "timed out" in output.needs
+    assert not await still_running(script)
+    assert not await still_running("sleep 3608")

@@ -16,9 +16,11 @@ Requires the ``claude`` CLI on ``PATH`` and an active session (``claude login``)
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
+import signal
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -149,6 +151,10 @@ class ClaudeCodeRunner:
                 env={**os.environ},
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # Its own process group, so stopping a workstream stops everything the
+                # session started -- a test run, a build, a dev server. Signalling only
+                # the parent leaves those orphaned inside a worktree nobody is watching.
+                start_new_session=True,
             )
         except (OSError, ValueError) as error:
             return SessionResult(
@@ -163,8 +169,16 @@ class ClaudeCodeRunner:
                 process.communicate(), timeout=self.timeout_seconds
             )
         except TimeoutError:
-            process.kill()
+            await _terminate(process)
             return SessionResult(ok=False, text=f"session timed out after {self.timeout_seconds}s")
+        except asyncio.CancelledError:
+            # `lj halt` and Ctrl-C cancel the task awaiting this child. Without this,
+            # the cancellation unwinds and leaves a detached `claude` session still
+            # editing a worktree that the harness has stopped watching -- the one
+            # failure mode where stopping the stand makes things worse than leaving
+            # it running.
+            await _terminate(process)
+            raise
 
         out = raw_out.decode("utf-8", "replace")
         err = raw_err.decode("utf-8", "replace")
@@ -226,6 +240,33 @@ class ClaudeCodeRunner:
             ),
             actor=workstream.agent,
         )
+
+
+async def _terminate(process: asyncio.subprocess.Process, grace: float = 5.0) -> None:
+    """SIGTERM the whole group, then SIGKILL it.
+
+    A session mid-edit deserves the chance to finish a write, which is why the first
+    signal is TERM. The group rather than the process because the session spawns its
+    own children and they hold the worktree open.
+    """
+    if process.returncode is not None:
+        return
+    _signal_group(process, signal.SIGTERM)
+    try:
+        await asyncio.wait_for(process.wait(), timeout=grace)
+    except TimeoutError:
+        _signal_group(process, signal.SIGKILL)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(process.wait(), timeout=grace)
+    # A cancelled `communicate()` leaves the pipes open. Draining closes the transport,
+    # but it is bounded: a grandchild still holding stdout must not stall a shutdown.
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(process.communicate(), timeout=1.0)
+
+
+def _signal_group(process: asyncio.subprocess.Process, sig: int) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+        os.killpg(os.getpgid(process.pid), sig)
 
 
 def _parse(payload: str, *, fallback: str = "") -> SessionResult:

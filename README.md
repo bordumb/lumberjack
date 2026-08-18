@@ -85,6 +85,11 @@ built-in worker. Set `worker_runtime` in `lumberjack.json` to make it the defaul
 Requires the `claude` CLI on `PATH` and an active login. Note that N parallel sessions
 consume your plan's usage limits N times faster.
 
+To stop a run: `Ctrl-C` the `lj run`, or `uv run lj halt` from anywhere. Either way each
+session is signalled as a process group, so whatever it started -- a test run, a build, a
+dev server -- goes down with it rather than being orphaned in a worktree nobody is
+watching. Worktrees holding unlanded work are always preserved.
+
 `--spec` skips the foreman entirely: one agent per specification file, no decomposition.
 Give a goal instead if you want the plan worked out for you.
 
