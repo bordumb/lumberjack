@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from lumberjack.adapters.claude_code import ClaudeCodeRunner, _parse, render_brief
+from lumberjack.adapters.claude_code import (
+    ClaudeCodeRunner,
+    CoordinationUnavailableError,
+    _parse,
+    render_brief,
+)
 from lumberjack.agents.outputs import TaskBlocked, TaskCompleted
 from lumberjack.core.services import Services
 
@@ -44,7 +49,7 @@ def argv_of(script: Path) -> list[str]:
 
 
 async def test_a_successful_session_completes_the_task(
-    services: Services, make_workstream, tmp_path: Path
+    services: Services, make_workstream, tmp_path: Path, monkeypatch
 ) -> None:
     payload = json.dumps(
         {
@@ -58,6 +63,9 @@ async def test_a_successful_session_completes_the_task(
     script = fake_claude(tmp_path, body=f"echo '{payload}'")
     workstream = await make_workstream("a")
     spec = services.projections.specs[workstream.task]
+    monkeypatch.setattr(
+        "lumberjack.adapters.claude_code._coordination_report", lambda _path: (5, 0)
+    )
 
     output = await ClaudeCodeRunner(repo=services.config.repo, binary=str(script)).run(
         workstream, spec, services
@@ -289,3 +297,96 @@ async def test_a_timed_out_session_is_killed_too(
     assert "timed out" in output.needs
     assert not await still_running(script)
     assert not await still_running("sleep 3608")
+
+
+async def test_coordination_tools_are_always_allowed(
+    services: Services, make_workstream, tmp_path: Path
+) -> None:
+    """Not a default: a session that cannot coordinate is not in the swarm."""
+    script = fake_claude(tmp_path, body='echo \'{"result": "ok"}\'')
+    workstream = await make_workstream("a")
+    spec = services.projections.specs[workstream.task]
+
+    runner = ClaudeCodeRunner(
+        repo=services.config.repo, binary=str(script), extra_allowed_tools=("Bash(git:*)",)
+    )
+    await runner.run(workstream, spec, services)
+
+    argv = argv_of(script)
+    allowed = argv[argv.index("--allowedTools") + 1]
+    assert allowed.startswith("mcp__lumberjack")
+    assert "Bash(git:*)" in allowed
+
+
+async def test_preflight_rejects_a_missing_cli(services: Services) -> None:
+    runner = ClaudeCodeRunner(repo=services.config.repo, binary="/nonexistent/claude")
+
+    with pytest.raises(CoordinationUnavailableError, match="claude login"):
+        await runner.preflight(services)
+
+
+async def test_preflight_rejects_a_missing_ledger(services: Services, tmp_path: Path) -> None:
+    """Sessions attach to a stand through the ledger; without one they coordinate with air."""
+    script = fake_claude(tmp_path, body="echo ok")
+    runner = ClaudeCodeRunner(repo=services.config.repo, binary=str(script))
+
+    with pytest.raises(CoordinationUnavailableError, match="no ledger"):
+        await runner.preflight(services)
+
+
+async def test_a_denied_coordination_call_blocks_the_task(
+    services: Services, make_workstream, tmp_path: Path, monkeypatch
+) -> None:
+    """The failure this whole check exists for: the session succeeds, blind."""
+    script = fake_claude(tmp_path, body='echo \'{"result": "all done!"}\'')
+    workstream = await make_workstream("a")
+    spec = services.projections.specs[workstream.task]
+    monkeypatch.setattr(
+        "lumberjack.adapters.claude_code._coordination_report", lambda _path: (0, 3)
+    )
+
+    output = await ClaudeCodeRunner(repo=services.config.repo, binary=str(script)).run(
+        workstream, spec, services
+    )
+
+    assert isinstance(output, TaskBlocked)
+    assert "written blind" in output.needs
+
+
+async def test_a_session_that_never_coordinated_blocks_too(
+    services: Services, make_workstream, tmp_path: Path, monkeypatch
+) -> None:
+    script = fake_claude(tmp_path, body='echo \'{"result": "all done!"}\'')
+    workstream = await make_workstream("a")
+    spec = services.projections.specs[workstream.task]
+    monkeypatch.setattr(
+        "lumberjack.adapters.claude_code._coordination_report", lambda _path: (0, 0)
+    )
+
+    output = await ClaudeCodeRunner(repo=services.config.repo, binary=str(script)).run(
+        workstream, spec, services
+    )
+
+    assert isinstance(output, TaskBlocked)
+    assert "not part of the swarm" in output.needs
+
+
+async def test_the_nesting_guard_is_stripped(
+    services: Services, make_workstream, tmp_path: Path, monkeypatch
+) -> None:
+    """`claude` refuses to start inside another session; ours are siblings, not nested."""
+    script = fake_claude(
+        tmp_path, body='printenv CLAUDECODE > "$0.nested"; echo \'{"result":"ok"}\''
+    )
+    monkeypatch.setenv("CLAUDECODE", "1")
+    workstream = await make_workstream("a")
+    spec = services.projections.specs[workstream.task]
+    monkeypatch.setattr(
+        "lumberjack.adapters.claude_code._coordination_report", lambda _path: (4, 0)
+    )
+
+    await ClaudeCodeRunner(repo=services.config.repo, binary=str(script)).run(
+        workstream, spec, services
+    )
+
+    assert Path(f"{script}.nested").read_text().strip() == ""

@@ -20,7 +20,17 @@ __all__ = ["WorkerRunner"]
 
 
 class WorkerRunner(Protocol):
-    name: str
+    @property
+    def name(self) -> str: ...
+
+    async def preflight(self, services: Services) -> None:
+        """Verify everything this runner needs, before any work is spawned.
+
+        Raise to abort the stand.  A swarm whose coordination is broken still burns
+        tokens and still writes code -- it writes it blind, while the harness reports
+        healthy progress -- so failing here is strictly better than starting.
+        """
+        ...
 
     async def run(
         self, workstream: Workstream, spec: TaskSpec, services: Services

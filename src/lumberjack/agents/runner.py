@@ -22,6 +22,9 @@ class PydanticAiRunner:
     agent: Agent[WorkerDeps, WorkerOutput]
     name: str = "pydantic_ai"
 
+    async def preflight(self, services: Services) -> None:
+        """Nothing to check: the model is resolved lazily and the agent runs in-process."""
+
     async def run(self, workstream: Workstream, spec: TaskSpec, services: Services) -> WorkerOutput:
         result = await self.agent.run(
             spec.intent,

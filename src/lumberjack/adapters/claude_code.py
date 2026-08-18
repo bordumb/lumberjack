@@ -33,7 +33,30 @@ from lumberjack.domain.task import BlockReason, TaskSpec
 from lumberjack.domain.workstream import Workstream
 from lumberjack.ids import new_note_id
 
-__all__ = ["ClaudeCodeRunner", "SessionResult", "render_brief"]
+__all__ = [
+    "COORDINATION_TOOLS",
+    "ClaudeCodeRunner",
+    "CoordinationUnavailableError",
+    "SessionResult",
+    "render_brief",
+]
+
+COORDINATION_TOOLS = "mcp__lumberjack"
+"""Always allowed.  A session that cannot call these is not in the swarm."""
+
+_NESTING_VARS = ("CLAUDECODE", "CLAUDE_CODE_SSE_PORT", "CLAUDE_CODE_ENTRYPOINT")
+
+_DENIAL_MARKER = "requested permissions to use"
+
+
+class CoordinationUnavailableError(RuntimeError):
+    """The infrastructure a swarm depends on is missing or refusing.
+
+    Raised loudly and early.  A stand that runs without coordination still burns
+    tokens and still writes code -- it just writes it blind, and the harness reports
+    healthy progress the whole time.  That is worse than not starting.
+    """
+
 
 BRIEF = """\
 You are `{agent}`, one of several agents working on this repository at the same time.
@@ -108,11 +131,91 @@ class ClaudeCodeRunner:
     repo: Path
     model: str = "opus"
     permission_mode: str = "acceptEdits"
-    allowed_tools: str = "mcp__lumberjack"
+    extra_allowed_tools: tuple[str, ...] = ()
     binary: str = field(default_factory=lambda: shutil.which("claude") or "claude")
     timeout_seconds: float = 3600.0
     extra_args: tuple[str, ...] = ()
     name: str = "claude_code"
+
+    @property
+    def allowed_tools(self) -> str:
+        """Coordination is never opt-out; extra permissions are added around it."""
+        return " ".join((COORDINATION_TOOLS, *self.extra_allowed_tools))
+
+    async def preflight(self, services: Services) -> None:
+        """Check every piece of coordination infrastructure before spawning anything."""
+        if not shutil.which(self.binary) and not Path(self.binary).is_file():
+            msg = (
+                f"the claude CLI was not found at {self.binary!r}. Install it and run "
+                "`claude login`, or choose --runtime pydantic_ai."
+            )
+            raise CoordinationUnavailableError(msg)
+        if not shutil.which("uv"):
+            msg = "uv is not on PATH; the MCP server runs as `uv run lj serve`."
+            raise CoordinationUnavailableError(msg)
+
+        ledger = services.config.resolved_state_root() / str(services.stand) / "ledger.db"
+        if not ledger.is_file():
+            msg = (
+                f"no ledger at {ledger}. Sessions attach to a stand through it, so it "
+                "must exist before any of them start."
+            )
+            raise CoordinationUnavailableError(msg)
+        await self._probe_server(services)
+
+    async def _probe_server(self, services: Services) -> None:
+        """Speak MCP to our own server before trusting sessions to it.
+
+        A config pointing at a broken command produces sessions that look busy and
+        coordinate with nothing, which is the failure this whole check exists to stop.
+        """
+        handshake = "\n".join(
+            json.dumps(message)
+            for message in (
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": "lumberjack-preflight", "version": "1"},
+                    },
+                },
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            )
+        )
+        process = await asyncio.create_subprocess_exec(
+            "uv",
+            "run",
+            "lj",
+            "serve",
+            "--repo",
+            str(self.repo.resolve()),
+            "--stand",
+            str(services.stand),
+            cwd=str(self.repo.resolve()),
+            env=_child_env(),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            raw, err = await asyncio.wait_for(
+                process.communicate(f"{handshake}\n".encode()), timeout=90
+            )
+        except TimeoutError:
+            await _terminate(process)
+            msg = "the lumberjack MCP server did not answer within 90s"
+            raise CoordinationUnavailableError(msg) from None
+
+        text = raw.decode("utf-8", "replace")
+        if '"tools"' not in text:
+            detail = (err.decode("utf-8", "replace") or text)[-600:]
+            msg = f"the lumberjack MCP server did not list its tools:\n{detail}"
+            raise CoordinationUnavailableError(msg)
 
     async def run(self, workstream: Workstream, spec: TaskSpec, services: Services) -> WorkerOutput:
         config = self._write_mcp_config(workstream, services)
@@ -145,6 +248,27 @@ class ClaudeCodeRunner:
                 reason=BlockReason.AGENT_ERROR,
                 needs=session.text[:2000] or "the claude session failed with no output",
             )
+
+        calls, denials = _coordination_report(workstream.worktree.path)
+        if denials:
+            return TaskBlocked(
+                reason=BlockReason.AGENT_ERROR,
+                needs=(
+                    f"the session was refused {denials} coordination call(s). It ran "
+                    "without claims, awareness or conflict checks -- the work it produced "
+                    "was written blind. Check that --allowedTools includes "
+                    f"{COORDINATION_TOOLS!r}."
+                ),
+            )
+        if calls == 0:
+            return TaskBlocked(
+                reason=BlockReason.AGENT_ERROR,
+                needs=(
+                    "the session never called a coordination tool, so it was not part of "
+                    "the swarm. Check that the MCP server started: `lj serve --stand "
+                    f"{services.stand}`."
+                ),
+            )
         return TaskCompleted(summary=session.text[:4000] or "session finished")
 
     # -- process ---------------------------------------------------------------------
@@ -154,7 +278,7 @@ class ClaudeCodeRunner:
             process = await asyncio.create_subprocess_exec(
                 *command,
                 cwd=str(cwd),
-                env={**os.environ},
+                env=_child_env(),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 # Its own process group, so stopping a workstream stops everything the
@@ -273,6 +397,54 @@ async def _terminate(process: asyncio.subprocess.Process, grace: float = 5.0) ->
 def _signal_group(process: asyncio.subprocess.Process, sig: int) -> None:
     with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
         os.killpg(os.getpgid(process.pid), sig)
+
+
+def _child_env() -> dict[str, str]:
+    """The nesting guard has to go.
+
+    ``claude`` refuses to start inside another session because nested sessions share
+    runtime resources. Ours are not nested in that sense -- each is a separate process
+    in its own worktree -- but the guard is an environment variable, so a stand started
+    from inside a Claude Code session dies three times over with a message nobody reads.
+    """
+    env = {key: value for key, value in os.environ.items() if key not in _NESTING_VARS}
+    return env
+
+
+def _coordination_report(worktree: Path) -> tuple[int, int]:
+    """(coordination calls made, permission denials) from the session's own transcript."""
+    folder = (
+        Path.home() / ".claude" / "projects" / str(worktree).replace("/", "-").replace(".", "-")
+    )
+    if not folder.is_dir():
+        return (0, 0)
+    logs = sorted(folder.glob("*.jsonl"), key=lambda item: item.stat().st_mtime)
+    if not logs:
+        return (0, 0)
+
+    calls = denials = 0
+    for line in logs[-1].read_text(errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        content = (event.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and str(block.get("name", "")).startswith(
+                COORDINATION_TOOLS
+            ):
+                calls += 1
+            elif block.get("type") == "tool_result":
+                rendered = json.dumps(block.get("content", ""))
+                if _DENIAL_MARKER in rendered and COORDINATION_TOOLS in rendered:
+                    denials += 1
+    return (calls, denials)
 
 
 def _parse(payload: str, *, fallback: str = "") -> SessionResult:

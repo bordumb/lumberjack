@@ -14,6 +14,7 @@ from typing import Annotated
 
 import cyclopts
 
+from lumberjack.adapters.claude_code import CoordinationUnavailableError
 from lumberjack.adapters.clock import SystemClock
 from lumberjack.adapters.git_cli import GitCli
 from lumberjack.adapters.sqlite_ledger import SqliteLedger
@@ -22,7 +23,8 @@ from lumberjack.core.projections import Projections
 from lumberjack.domain.events import StandHalted
 from lumberjack.domain.task import TaskSpec
 from lumberjack.domain.workstream import ArbitrationMode, StandConfig
-from lumberjack.ids import StandId, TaskId
+from lumberjack.ids import CommitSha, StandId, TaskId
+from lumberjack.ports.git import GitError
 from lumberjack.stand import Stand
 
 __all__ = ["app", "main"]
@@ -157,6 +159,12 @@ def run(
     runtime: Annotated[
         str | None, cyclopts.Parameter(name=["--runtime"], help="pydantic_ai | claude_code")
     ] = None,
+    resume: Annotated[
+        str | None,
+        cyclopts.Parameter(
+            name=["--resume"], help="Continue each task from an earlier stand's branch."
+        ),
+    ] = None,
 ) -> None:
     """Plan and execute: N agents, N worktrees, one integration branch.
 
@@ -184,9 +192,28 @@ def run(
         )
 
         async with Stand.open(config) as stand:
+            if resume is not None:
+                if plan is None:
+                    print("--resume needs --spec, so tasks can be matched by id")
+                    raise SystemExit(2)
+                found = await _resume_bases(config.repo, resume, plan)
+                if not found:
+                    print(f"no branches found for stand {resume}; nothing to resume from")
+                    raise SystemExit(3)
+                stand.supervisor.resume_bases.update(found)
+                for task_id, commit in found.items():
+                    print(f"resuming {task_id} from {commit[:8]}")
             print(f"stand {stand.stand_id} on {config.repo}")
             print(f"runtime: {config.worker_runtime}, up to {config.max_parallel} parallel")
-            outcome = await stand.supervisor.run(description, plan=plan)
+            try:
+                outcome = await stand.supervisor.run(description, plan=plan)
+            except CoordinationUnavailableError as error:
+                print(f"\ncoordination is unavailable, so the stand did not start:\n  {error}")
+                print(
+                    "\nAgents would have run without claims, awareness or conflict "
+                    "checks -- writing code blind while this reported progress."
+                )
+                raise SystemExit(3) from error
             print(outcome.summary())
             for item in outcome.workstreams:
                 print(f"  {item.agent}  {item.task.kind:<20} {item.task.spec.title}")
@@ -196,6 +223,19 @@ def run(
                     print(f"  {path}")
 
     asyncio.run(go())
+
+
+async def _resume_bases(repo: Path, stand: str, plan: Plan) -> dict[TaskId, CommitSha]:
+    """Map each planned task to the tip of its branch in an earlier stand."""
+    git = GitCli(repo=repo)
+    found: dict[TaskId, CommitSha] = {}
+    for spec in plan.tasks:
+        branch = f"lj/{stand}/{spec.task_id}"
+        try:
+            found[spec.task_id] = await git.resolve(branch)
+        except GitError:
+            continue
+    return found
 
 
 @app.command

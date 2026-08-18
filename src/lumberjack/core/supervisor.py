@@ -142,6 +142,8 @@ class Supervisor:
     _running: dict[WorkstreamId, asyncio.Task[None]] = field(default_factory=dict)
     _background: list[asyncio.Task[None]] = field(default_factory=list)
     _arbitrating: set[str] = field(default_factory=set)
+    resume_bases: dict[TaskId, CommitSha] = field(default_factory=dict)
+    """Per-task starting commits, so a workstream can pick up an earlier stand's branch."""
     _resolved: int = 0
 
     def __post_init__(self) -> None:
@@ -221,6 +223,9 @@ class Supervisor:
     async def run(self, goal: str, *, plan: Plan | None = None) -> StandOutcome:
         started = self.services.clock.now()
         base = await self.prepare(goal)
+        assert self.runner is not None
+        # Before any worktree exists: if coordination cannot work, do not start.
+        await self.runner.preflight(self.services)
         graph = await (self.adopt(plan) if plan is not None else self.plan(goal))
 
         self._background = [
@@ -295,7 +300,10 @@ class Supervisor:
         agent_id = new_agent_id("agent")
         branch = services.config.workstream_branch(services.stand, spec.task_id)
         path = services.config.resolved_worktree_root() / workstream_id
-        worktree: Worktree = await services.git.add_worktree(branch, base, path)
+        # Resuming starts the worktree on the earlier stand's branch rather than the
+        # base, so the agent continues its own work instead of redoing it.
+        start = self.resume_bases.get(spec.task_id, base)
+        worktree: Worktree = await services.git.add_worktree(branch, start, path)
 
         workstream = Workstream(
             workstream_id=workstream_id,
