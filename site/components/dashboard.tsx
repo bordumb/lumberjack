@@ -144,7 +144,12 @@ export function Dashboard({ stand }: { stand: string }) {
         <section className="space-y-2">
           <h2 className="font-sans text-sm font-medium tracking-[-0.01em]">Open conflicts</h2>
           {data.conflicts.map((conflict) => (
-            <Card key={conflict.id} className="gap-1 border-amber-500/30 bg-amber-500/5 p-3">
+            <Link
+              key={conflict.id}
+              href={`/conflicts/${conflict.id}?stand=${data.stand}`}
+              className="block"
+            >
+              <Card className="gap-1 border-amber-500/30 bg-amber-500/5 p-3 transition-colors hover:border-amber-500/60 hover:bg-amber-500/10">
               <div className="flex items-center gap-2 text-xs">
                 <Badge variant="outline" className="h-5 border-amber-500/40 text-amber-400">
                   {conflict.severity}
@@ -154,12 +159,13 @@ export function Dashboard({ stand }: { stand: string }) {
                   {conflict.between.join(" vs ")}
                 </span>
               </div>
-              {conflict.paths.length > 0 && (
-                <p className="font-mono text-[11px] text-muted-foreground">
-                  {conflict.paths.join(", ")}
-                </p>
-              )}
-            </Card>
+                {conflict.paths.length > 0 && (
+                  <p className="font-mono text-[11px] text-muted-foreground">
+                    {conflict.paths.join(", ")}
+                  </p>
+                )}
+              </Card>
+            </Link>
           ))}
         </section>
       )}

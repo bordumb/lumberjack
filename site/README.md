@@ -39,6 +39,21 @@ the file or command they act on; coordination calls (`claim`, `awareness`, `chec
 five lines collapses by default — a transcript is mostly file contents, and rendering all
 of it turns a log into a haystack.
 
+**`/conflicts/<id>`** — one page per raised conflict, rendered with
+[`@pierre/diffs`](https://diffs.com/docs). Each contested file collapses independently:
+
+- Where the two sides genuinely clash, the file is three-way merged with `git merge-file`
+  and rendered through `UnresolvedFile`, so the real conflict regions appear with
+  take-one-side controls rather than as two diffs you have to reconcile by eye.
+- Where they merge cleanly as text — a `blast_radius` or `claim_overlap` conflict, where
+  the danger is semantic — each side is shown as a split diff against the base they
+  diverged from, which is exactly what git merged.
+
+**Token hover** works across both. Point at any name and its definition appears: the
+signature, the kind, the line, and the file it comes from. Definitions are indexed
+repo-wide from one `git grep`, because the names you most want explained are the ones a
+file *imports*, and those are never defined in front of you.
+
 ## Configuration
 
 `LUMBERJACK_REPO` overrides the repository root, which otherwise defaults to the parent of
