@@ -6,6 +6,8 @@ codebase, with first-class **awareness** of what every other agent is touching.
 Worktrees solve isolation. They do nothing for coordination. Lumberjack is the
 coordination layer.
 
+![alt text](docs/images/logo.png)
+
 See [docs/specs/SPEC.md](docs/specs/SPEC.md) for the full design.
 
 ## The idea in three sentences
