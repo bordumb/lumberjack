@@ -160,9 +160,10 @@ class StandConfig(BaseModel):
         return f"{self.branch_prefix}/{stand}/{task}"
 
     def resolved_worktree_root(self) -> Path:
+        """Absolute: subprocesses run with their own cwd and would resolve it wrongly."""
         root = self.worktree_root
-        return root if root.is_absolute() else self.repo / root
+        return (root if root.is_absolute() else self.repo / root).resolve()
 
     def resolved_state_root(self) -> Path:
         root = self.state_root
-        return root if root.is_absolute() else self.repo / root
+        return (root if root.is_absolute() else self.repo / root).resolve()

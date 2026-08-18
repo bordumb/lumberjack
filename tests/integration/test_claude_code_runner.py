@@ -101,7 +101,9 @@ async def test_an_mcp_config_is_written_pointing_at_this_stand(
         workstream, spec, services
     )
 
-    config = json.loads((workstream.worktree.path / ".lumberjack-mcp.json").read_text())
+    argv = argv_of(script)
+    written = Path(argv[argv.index("--mcp-config") + 1])
+    config = json.loads(written.read_text())
     args = config["mcpServers"]["lumberjack"]["args"]
     assert "serve" in args
     assert args[args.index("--stand") + 1] == services.stand
@@ -190,3 +192,44 @@ def test_parse_is_forgiving(payload: str, ok: bool, contains: str) -> None:
 
     assert result.ok is ok
     assert contains in result.text
+
+
+async def test_the_config_path_is_absolute_and_outside_the_worktree(
+    services: Services, make_workstream, tmp_path: Path
+) -> None:
+    """Two bugs in one assertion.
+
+    A relative ``--mcp-config`` is resolved against the session's cwd -- the worktree --
+    so the path doubles and every session dies before it starts. And anything left
+    inside a worktree is swept up by ``git add -A`` when the work is committed, which
+    would land the harness's own scaffolding on the integration branch.
+    """
+    script = fake_claude(tmp_path, body='echo \'{"result": "ok"}\'')
+    workstream = await make_workstream("a")
+    spec = services.projections.specs[workstream.task]
+
+    await ClaudeCodeRunner(repo=services.config.repo, binary=str(script)).run(
+        workstream, spec, services
+    )
+
+    argv = argv_of(script)
+    written = Path(argv[argv.index("--mcp-config") + 1])
+    assert written.is_absolute()
+    assert written.is_file()
+    assert not written.is_relative_to(workstream.worktree.path.resolve())
+    assert not list(workstream.worktree.path.glob("*mcp*.json"))
+
+
+async def test_the_worktree_stays_clean_for_the_agent(
+    services: Services, make_workstream, tmp_path: Path
+) -> None:
+    """The session must open onto its task, not onto the harness's leftovers."""
+    script = fake_claude(tmp_path, body='echo \'{"result": "ok"}\'')
+    workstream = await make_workstream("a")
+    spec = services.projections.specs[workstream.task]
+
+    await ClaudeCodeRunner(repo=services.config.repo, binary=str(script)).run(
+        workstream, spec, services
+    )
+
+    assert not (await services.git.status(workstream.worktree)).dirty

@@ -126,7 +126,7 @@ class ClaudeCodeRunner:
             "--output-format",
             "json",
             "--add-dir",
-            str(workstream.worktree.path),
+            str(workstream.worktree.path.resolve()),
             *self.extra_args,
         ]
         session = await self._spawn(command, cwd=workstream.worktree.path)
@@ -173,8 +173,17 @@ class ClaudeCodeRunner:
         return _parse(out, fallback=err)
 
     def _write_mcp_config(self, workstream: Workstream, services: Services) -> Path:
-        """One config per worktree, pointing the session back at this stand."""
-        target = workstream.worktree.path / ".lumberjack-mcp.json"
+        """One config per workstream, pointing the session back at this stand.
+
+        Written to the stand's state directory rather than into the worktree: anything
+        left in a worktree is picked up by ``git add -A`` when the work is committed,
+        and a harness that lands its own scaffolding onto the integration branch is
+        not one anybody should trust.  The path is absolute because the session runs
+        with its cwd set to the worktree.
+        """
+        folder = services.config.resolved_state_root() / str(services.stand) / "mcp"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{workstream.workstream_id}.json"
         payload = {
             "mcpServers": {
                 "lumberjack": {
@@ -194,7 +203,7 @@ class ClaudeCodeRunner:
             }
         }
         target.write_text(json.dumps(payload, indent=2))
-        return target
+        return target.resolve()
 
     async def _record(
         self, workstream: Workstream, session: SessionResult, services: Services
