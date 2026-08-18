@@ -8,7 +8,7 @@ coordination layer.
 
 ![alt text](docs/images/logo.png)
 
-See [docs/specs/SPEC.md](docs/specs/SPEC.md) for the full design.
+See [docs/specs/0001_SPEC.md](docs/specs/0001_SPEC.md) for the full design.
 
 ## The idea in three sentences
 

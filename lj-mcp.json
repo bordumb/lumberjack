@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "lumberjack": {
+      "command": "uv",
+      "args": ["run", "lj", "serve", "--transport", "stdio"],
+      "cwd": "."
+    }
+  }
+}
