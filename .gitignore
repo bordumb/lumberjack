@@ -8,3 +8,6 @@ __pycache__/
 .coverage
 dist/
 build/
+site/node_modules/
+site/.next/
+site/next-env.d.ts

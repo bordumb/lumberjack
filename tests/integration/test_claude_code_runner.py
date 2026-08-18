@@ -100,6 +100,8 @@ async def test_the_flags_match_the_cli_contract(
     assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
     assert argv[argv.index("--output-format") + 1] == "json"
     assert argv[argv.index("--add-dir") + 1] == str(workstream.worktree.path)
+    # Without this the session is denied every coordination call and works blind.
+    assert argv[argv.index("--allowedTools") + 1] == "mcp__lumberjack"
 
 
 async def test_an_mcp_config_is_written_pointing_at_this_stand(

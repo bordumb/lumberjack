@@ -108,6 +108,7 @@ class ClaudeCodeRunner:
     repo: Path
     model: str = "opus"
     permission_mode: str = "acceptEdits"
+    allowed_tools: str = "mcp__lumberjack"
     binary: str = field(default_factory=lambda: shutil.which("claude") or "claude")
     timeout_seconds: float = 3600.0
     extra_args: tuple[str, ...] = ()
@@ -125,6 +126,11 @@ class ClaudeCodeRunner:
             str(config),
             "--permission-mode",
             self.permission_mode,
+            # `acceptEdits` covers file edits but still prompts for MCP tools, and a
+            # headless session has nobody to prompt: every coordination call is denied
+            # and the agent works blind while the harness assumes it is participating.
+            "--allowedTools",
+            self.allowed_tools,
             "--output-format",
             "json",
             "--add-dir",
