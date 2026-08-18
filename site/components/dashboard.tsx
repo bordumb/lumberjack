@@ -53,7 +53,9 @@ export function Dashboard({ stand }: { stand: string }) {
     <div className="mx-auto max-w-6xl space-y-6 p-8">
       <header className="space-y-2">
         <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold tracking-tight">{data.goal || data.stand}</h1>
+          <h1 className="font-sans text-xl font-semibold tracking-[-0.02em]">
+            {data.goal || data.stand}
+          </h1>
           <span
             className={cn(
               "rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider",
@@ -94,7 +96,7 @@ export function Dashboard({ stand }: { stand: string }) {
           <Link key={agent.id} href={`/agents/${agent.id}?stand=${data.stand}`} className="block">
             <Card className="gap-0 border-border/60 p-4 transition-colors hover:border-primary/40 hover:bg-card/80">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className={cn("text-sm font-medium", STATE[agent.state] ?? "")}>
+                <span className={cn("font-sans text-sm font-medium tracking-[-0.01em]", STATE[agent.state] ?? "")}>
                   {agent.title}
                 </span>
                 <Badge variant="outline" className="h-5 font-mono text-[10px]">
@@ -140,7 +142,7 @@ export function Dashboard({ stand }: { stand: string }) {
 
       {data.conflicts.length > 0 && (
         <section className="space-y-2">
-          <h2 className="text-sm font-medium">Open conflicts</h2>
+          <h2 className="font-sans text-sm font-medium tracking-[-0.01em]">Open conflicts</h2>
           {data.conflicts.map((conflict) => (
             <Card key={conflict.id} className="gap-1 border-amber-500/30 bg-amber-500/5 p-3">
               <div className="flex items-center gap-2 text-xs">
@@ -164,7 +166,7 @@ export function Dashboard({ stand }: { stand: string }) {
 
       {data.notes.length > 0 && (
         <section className="space-y-2">
-          <h2 className="text-sm font-medium">Blackboard</h2>
+          <h2 className="font-sans text-sm font-medium tracking-[-0.01em]">Blackboard</h2>
           {data.notes.slice(0, 6).map((note, index) => (
             <Card key={index} className="gap-1 border-border/50 p-3">
               <div className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
@@ -199,7 +201,10 @@ function Stat({
         <Icon className="h-3 w-3" />
         {label}
       </div>
-      <p className={cn("text-2xl font-semibold tabular-nums", tone === "warn" && "text-amber-400")}>
+      <p className={cn(
+          "font-sans text-[28px] font-semibold leading-none tracking-[-0.03em] tabular-nums",
+          tone === "warn" && "text-amber-400",
+        )}>
         {value}
       </p>
     </Card>

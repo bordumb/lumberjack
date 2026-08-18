@@ -16,7 +16,7 @@ export default async function Page({
   if (!stand) {
     return (
       <main className="mx-auto max-w-2xl p-16 text-center">
-        <h1 className="text-lg font-semibold">No stands yet</h1>
+        <h1 className="font-sans text-xl font-semibold tracking-[-0.02em]">No stands yet</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           Start one with{" "}
           <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">uv run lj run</code>{" "}

@@ -33,7 +33,7 @@ export default async function AgentPage({
           all agents
         </Link>
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-lg font-semibold tracking-tight">{agent.title}</h1>
+          <h1 className="font-sans text-xl font-semibold tracking-[-0.02em]">{agent.title}</h1>
           <Badge variant="outline" className="font-mono text-[10px]">
             {agent.state}
           </Badge>
