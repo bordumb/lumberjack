@@ -431,6 +431,10 @@ class Supervisor:
             with contextlib.suppress(Exception):
                 await self.services.projections.hydrate(self.services.ledger)
             if self.services.projections.halted:
+                # `lj halt` reaches us as an event, not a call, so cancel the workers
+                # here. Relying on the event loop to collect them at teardown happens
+                # to work and is not something to depend on.
+                self._cancel_workers()
                 self.stop.set()
                 return
 
@@ -577,10 +581,14 @@ class Supervisor:
 
     # -- teardown --------------------------------------------------------------------
 
-    async def halt(self, reason: str = "operator halt") -> None:
-        self.stop.set()
+    def _cancel_workers(self) -> None:
+        """Cancel in-flight workers; each runner is responsible for its own children."""
         for task in self._running.values():
             task.cancel()
+
+    async def halt(self, reason: str = "operator halt") -> None:
+        self.stop.set()
+        self._cancel_workers()
         preserved = tuple(
             workstream.workstream_id
             for workstream in self.services.projections.active_workstreams()
