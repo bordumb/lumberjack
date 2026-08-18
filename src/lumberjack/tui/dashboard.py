@@ -22,6 +22,12 @@ from lumberjack.ids import StandId
 __all__ = ["Dashboard", "run_dashboard"]
 
 _SEVERITY_STYLE = {"notice": "dim", "warn": "yellow", "block": "bold red"}
+_TERMINAL = frozenset({"landed", "blocked", "abandoned"})
+_BANNER = {
+    "halted": "[bold red]HALTED[/bold red] -- stopped; nothing below is running",
+    "finished": "[bold yellow]FINISHED[/bold yellow] -- every task is terminal",
+    "live": "[bold green]LIVE[/bold green]",
+}
 
 
 class Dashboard(App[None]):
@@ -55,7 +61,7 @@ class Dashboard(App[None]):
 
     async def on_mount(self) -> None:
         workstreams = self.query_one("#workstreams", DataTable)
-        workstreams.add_columns("agent", "task", "state", "branch", "drift", "touched")
+        workstreams.add_columns("agent", "task", "state", "branch", "worktree", "touched")
         conflicts = self.query_one("#conflicts", DataTable)
         conflicts.add_columns("severity", "source", "between", "files")
         leases = self.query_one("#leases", DataTable)
@@ -73,24 +79,31 @@ class Dashboard(App[None]):
         await self.projections.hydrate(self._ledger)
         state = self.projections
         head = (state.integration_head or "?")[:8]
+        lifecycle = state.lifecycle()
+        banner = _BANNER[lifecycle]
         self.query_one("#headline", Static).update(
-            f"[b]{state.goal or self.stand}[/b]\n"
+            f"[b]{state.goal or self.stand}[/b]  {banner}\n"
             f"{state.integration_branch} @ {head} -- {state.summary()}"
-            + ("  [bold red]HALTED[/bold red]" if state.halted else "")
         )
 
         table = self.query_one("#workstreams", DataTable)
         table.clear()
         for item in state.workstreams.values():
             task = state.tasks.get(item.task)
+            kind = task.kind if task is not None else "?"
             touched = len(state.observed_paths(item.workstream_id))
+            # A workstream whose worktree is gone is history. Rendering it identically
+            # to a working agent is how a dead stand comes to look like a live one.
+            present = item.worktree.path.is_dir()
+            dim = not present or kind in _TERMINAL
+            wrap = (lambda text: f"[dim]{text}[/dim]") if dim else (lambda text: text)
             table.add_row(
-                str(item.agent),
-                task.spec.title[:40] if task is not None else str(item.task),
-                task.kind if task is not None else "?",
-                item.worktree.branch,
-                f"{item.drift.behind}" if item.drift.behind else "-",
-                f"{touched} files",
+                wrap(str(item.agent)),
+                wrap(task.spec.title[:40] if task is not None else str(item.task)),
+                wrap(kind),
+                wrap(item.worktree.branch),
+                wrap("present" if present else "removed"),
+                wrap(f"{touched} files"),
             )
 
         conflicts = self.query_one("#conflicts", DataTable)

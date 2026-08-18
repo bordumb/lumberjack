@@ -343,6 +343,20 @@ class Projections:
         scored.sort(key=lambda item: item[0], reverse=True)
         return tuple(note for _, note in scored[:limit])
 
+    def finished(self) -> bool:
+        """Whether this stand is over: halted, or every task reached a terminal state."""
+        if self.halted:
+            return True
+        if not self.tasks:
+            return False
+        return all(task.kind in ("landed", "blocked", "abandoned") for task in self.tasks.values())
+
+    def lifecycle(self) -> str:
+        """``live``, ``halted`` or ``finished`` -- what a reader needs before anything else."""
+        if self.halted:
+            return "halted"
+        return "finished" if self.finished() else "live"
+
     def completed_tasks(self) -> frozenset[TaskId]:
         return frozenset(self.landed)
 

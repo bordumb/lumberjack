@@ -209,7 +209,10 @@ def status(*, repo: Path = Path(), stand: str | None = None) -> None:
             return
         projections = await _replay(repo, target)
         clock = SystemClock()
-        print(f"stand {target}: {projections.goal}")
+        lifecycle = projections.lifecycle()
+        print(f"stand {target} [{lifecycle}]: {projections.goal}")
+        if lifecycle != "live":
+            print(f"  this stand is {lifecycle}; nothing below is running")
         print(
             f"integration: {projections.integration_branch} @ "
             f"{(projections.integration_head or '?')[:8]}"
@@ -218,8 +221,8 @@ def status(*, repo: Path = Path(), stand: str | None = None) -> None:
         for item in projections.workstreams.values():
             task = projections.tasks.get(item.task)
             state = task.kind if task is not None else "unknown"
-            drift = f" [{item.drift.behind} behind]" if item.drift.behind else ""
-            print(f"  {item.agent:<24} {state:<20} {item.worktree.branch}{drift}")
+            gone = "" if item.worktree.path.is_dir() else "  (worktree removed)"
+            print(f"  {item.agent:<24} {state:<20} {item.worktree.branch}{gone}")
         leases = projections.active_leases(clock.now())
         print(f"\nleases ({len(leases)}):")
         for lease in leases:
