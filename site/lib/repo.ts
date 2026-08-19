@@ -20,6 +20,8 @@ export type RepoTree = {
   paths: string[];
   gitStatus: { path: string; status: GitStatusName }[];
   truncated?: boolean;
+  unreadable?: string[];
+  error?: string;
 };
 
 type GitStatusName = "added" | "deleted" | "ignored" | "modified" | "renamed" | "untracked";
@@ -86,12 +88,16 @@ export async function repoTree(repo: string = DEFAULT_REPO): Promise<RepoTree> {
   ]);
 
   const paths: string[] = [];
+  const unreadable: string[] = [];
   const walk = (relative: string): void => {
     if (paths.length > MAX_ENTRIES) return;
     let entries: Dirent[] = [];
     try {
       entries = readdirSync(path.join(repo, relative), { withFileTypes: true });
     } catch {
+      // A directory we cannot read is worth saying so about. Silently returning an
+      // empty list is how an unreadable repository comes to look like an empty one.
+      unreadable.push(relative || ".");
       return;
     }
     for (const entry of entries) {
@@ -127,7 +133,16 @@ export async function repoTree(repo: string = DEFAULT_REPO): Promise<RepoTree> {
     gitStatus.push({ path: prefix.replace(/\/$/, ""), status: "ignored" });
   }
 
-  return { paths: paths.sort(), gitStatus, truncated: paths.length > MAX_ENTRIES };
+  return {
+    paths: paths.sort(),
+    gitStatus,
+    truncated: paths.length > MAX_ENTRIES,
+    unreadable,
+    error:
+      paths.length === 0
+        ? `nothing readable under ${repo}. Is it still on disk?`
+        : undefined,
+  };
 }
 
 export async function readRepoFile(
