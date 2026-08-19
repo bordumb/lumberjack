@@ -91,6 +91,12 @@ over five lines collapses by default, since a transcript is mostly file contents
 
 Token hover works here too, from the same repo-wide index the conflict pages use.
 
+**`/notes/<id>`** — one page per blackboard note. Agents write markdown -- headings,
+tables, fenced code -- and a three-line clamp on the dashboard hides most of it, so the
+note is rendered properly with its source one click away. The header carries the scope
+that decides who the note reaches, since the blackboard is scoped rather than broadcast:
+an unscoped note says so, because it competes for every agent's context budget.
+
 **`/conflicts/<id>`** — one page per raised conflict, rendered with
 [`@pierre/diffs`](https://diffs.com/docs). Each contested file collapses independently:
 

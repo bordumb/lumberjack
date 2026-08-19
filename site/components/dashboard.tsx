@@ -186,16 +186,25 @@ export function Dashboard({ stand, repo }: { stand: string; repo?: string | null
       {data.notes.length > 0 && (
         <section className="space-y-2">
           <h2 className="font-sans text-sm font-medium tracking-[-0.01em]">Blackboard</h2>
-          {data.notes.slice(0, 6).map((note, index) => (
-            <Card key={index} className="gap-1 border-border/50 p-3">
-              <div className="flex items-center gap-2 font-mono text-[11px] text-muted-foreground">
-                <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
-                  {note.topic}
-                </Badge>
-                {note.author}
-              </div>
-              <p className="line-clamp-3 text-[12.5px] text-foreground/85">{note.body}</p>
-            </Card>
+          {data.notes.slice(0, 8).map((note) => (
+            <Link
+              key={note.id}
+              href={`/notes/${note.id}?stand=${data.stand}`}
+              className="block"
+            >
+              <Card className="gap-1 border-border/50 p-3 transition-colors hover:border-primary/40 hover:bg-card/80">
+                <div className="flex flex-wrap items-center gap-2 font-mono text-[11px] text-muted-foreground">
+                  <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                    {note.topic}
+                  </Badge>
+                  {note.author}
+                  {note.scope.length > 0 && (
+                    <span className="truncate opacity-60">{note.scope.join(", ")}</span>
+                  )}
+                </div>
+                <p className="line-clamp-2 text-[12.5px] text-foreground/85">{note.body}</p>
+              </Card>
+            </Link>
           ))}
         </section>
       )}

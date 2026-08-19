@@ -48,6 +48,16 @@ export type ReviewComment = {
   replies: { frm: string; body: string; at: number }[];
 };
 
+export type Note = {
+  id: string;
+  author: string;
+  topic: string;
+  body: string;
+  at: number;
+  scope: string[];
+  pins: string[];
+};
+
 export type StandSnapshot = {
   stand: string;
   goal: string;
@@ -62,7 +72,7 @@ export type StandSnapshot = {
   startedAt: number | null;
   workstreams: Workstream[];
   conflicts: Conflict[];
-  notes: { author: string; topic: string; body: string; at: number }[];
+  notes: Note[];
   comments: ReviewComment[];
   eventCounts: Record<string, number>;
   totalEvents: number;

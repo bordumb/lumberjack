@@ -236,7 +236,17 @@ function fold(stand: string, repo: string): StandSnapshot | null {
         conflicts.delete(p.conflict_id);
         break;
       case "note_posted":
-        notes.push({ author: p.note.author, topic: p.note.topic, body: p.note.body, at });
+        notes.push({
+          id: p.note.note_id,
+          author: p.note.author,
+          topic: p.note.topic,
+          body: p.note.body,
+          at,
+          scope: describeScopePaths(p.note.scope),
+          pins: (p.note.pins ?? []).map(
+            (pin: { module: string; qualname: string }) => `${pin.module}:${pin.qualname}`,
+          ),
+        });
         break;
       case "review_comment_posted": {
         const c = p.comment;
@@ -335,7 +345,7 @@ function fold(stand: string, repo: string): StandSnapshot | null {
     startedAt,
     workstreams: list,
     conflicts: [...conflicts.values()],
-    notes: notes.slice(-20).reverse(),
+    notes: notes.slice(-40).reverse(),
     comments: [...comments.values()],
     eventCounts,
     totalEvents: rows.length,
@@ -375,6 +385,15 @@ function statusOf(
     (agent) => (awarenessAt.get(agent) ?? 0) >= comment.postedAt,
   );
   return seen ? "delivered" : "queued";
+}
+
+/** A note's scope as plain patterns, which is what decides who it reaches. */
+function describeScopePaths(
+  scope: { kind: string; patterns?: string[]; symbols?: { path: string }[] } | null | undefined,
+): string[] {
+  if (!scope) return [];
+  if (scope.kind === "path") return scope.patterns ?? [];
+  return [...new Set((scope.symbols ?? []).map((item) => item.path))];
 }
 
 function describeScope(scope: { kind: string; patterns?: string[]; symbols?: { module: string; qualname: string }[] }): string {
