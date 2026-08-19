@@ -3,6 +3,28 @@
 > Builds on [0001_SPEC.md](0001_SPEC.md) §13 (Observability) and §14 (Safety).
 > Sibling specs: [0003_ux.md](0003_ux.md), [0004_errors.md](0004_errors.md).
 
+## 0. House rules
+
+Binding, and shared with every sibling spec. [0000_house_rules.md](0000_house_rules.md)
+gives the reasoning.
+
+- **Logging** is the standard library: `log = logging.getLogger(__name__)`, configured
+  once in `cli/` and nowhere else. The ledger records what happened to the *work*; the
+  log records what happened to the *process*. `print()` belongs to `cli/` alone.
+- **Errors** never disappear. No bare `except Exception: pass` — catch the narrowest
+  type, log it, and say why continuing is correct. The taxonomy lives in
+  `domain/errors.py`; boundary-specific errors stay with their boundary.
+- **Dependencies** are a last resort. If you add one, run `uv lock` and commit the
+  lockfile in the same change, and say what you added in your handoff.
+- **Layering** from [0001_SPEC.md](0001_SPEC.md) §5 is not advisory. Every new module is
+  in `domain/`, `ports/`, `core/`, `adapters/`, `agents/`, `cli/`, `tui/` or `server/`.
+  Nothing at package root. Test doubles go in `tests/fakes.py`.
+- **Wrap, do not sprinkle.** Behaviour that applies to a whole boundary wraps the port,
+  following `adapters/projecting.py`.
+- **Verification**: run `uv run ruff check . && uv run ty check && uv run pytest`. If you
+  *cannot*, say so immediately via `post_note` and `message` — not in your final summary.
+  Reading the code is not verification; say which you did.
+
 ## 1. Goal
 
 Make a running stand legible while it runs, and make its cost countable.
@@ -109,7 +131,27 @@ memory — do not turn every model call into a database write.
 `totals()` and `for_workstream()`. Freeze those two signatures early, post them to the
 blackboard, and use `propose_amendment` if you have to change them.
 
-### 3.6 Configuration
+### 3.6 What to build on
+
+OpenTelemetry, behind an optional extra:
+
+```toml
+[project.optional-dependencies]
+telemetry = [
+  "opentelemetry-sdk>=1.30",
+  "opentelemetry-exporter-otlp-proto-http>=1.30",
+]
+```
+
+`NullTelemetry` is what runs when the extra is absent, so the import of the SDK happens
+inside the adapter that needs it and nowhere else. `0001_SPEC.md` §13 mentions Logfire:
+it is OTel-compatible and needs no separate integration, so do not add it.
+
+Bridge the standard library logger rather than replacing it. Every module already logs
+through `logging.getLogger(__name__)`, and OTel's logging instrumentation picks that up
+without a second logging vocabulary in the codebase.
+
+### 3.7 Configuration
 
 Add a `telemetry: TelemetryConfig` field to `StandConfig`. `TelemetryConfig` covers:
 enabled (default `False`), exporter (`none | otlp | console`), endpoint, service name,
@@ -121,6 +163,7 @@ machine.
 
 - [ ] `NullTelemetry` is the default; `uv run pytest` passes with no OTel installed.
 - [ ] `uv sync --extra telemetry` installs the OTel stack; nothing else changes.
+- [ ] `uv.lock` is regenerated and committed alongside the `pyproject.toml` change.
 - [ ] `UsageLedger.totals()` reports non-zero tokens after a `FunctionModel` run.
 - [ ] `TracedGit` records `merge_tree` latency against a real repository.
 - [ ] Every instrument in §3.4 is emitted, with a test asserting the attribute names.

@@ -44,6 +44,14 @@ __all__ = [
 COORDINATION_TOOLS = "mcp__lumberjack"
 """Always allowed.  A session that cannot call these is not in the swarm."""
 
+VERIFICATION_TOOLS = ("Bash", "Read", "Write", "Edit", "Glob", "Grep")
+"""Also always allowed.
+
+Every spec asks the agent to run ruff, ty and pytest before landing, and the first run
+could not: `uv run pytest` came back "This command requires approval" in a session with
+nobody to approve it. An agent that cannot check its own work reports an unverified
+branch as finished, which is worse than reporting a red one."""
+
 _NESTING_VARS = ("CLAUDECODE", "CLAUDE_CODE_SSE_PORT", "CLAUDE_CODE_ENTRYPOINT")
 
 _DENIAL_MARKER = "requested permissions to use"
@@ -140,8 +148,8 @@ class ClaudeCodeRunner:
 
     @property
     def allowed_tools(self) -> str:
-        """Coordination is never opt-out; extra permissions are added around it."""
-        return " ".join((COORDINATION_TOOLS, *self.extra_allowed_tools))
+        """Coordination and self-verification are never opt-out."""
+        return " ".join((COORDINATION_TOOLS, *VERIFICATION_TOOLS, *self.extra_allowed_tools))
 
     async def preflight(self, services: Services) -> None:
         """Check every piece of coordination infrastructure before spawning anything."""

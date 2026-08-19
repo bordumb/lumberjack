@@ -109,8 +109,11 @@ async def test_the_flags_match_the_cli_contract(
     assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
     assert argv[argv.index("--output-format") + 1] == "json"
     assert argv[argv.index("--add-dir") + 1] == str(workstream.worktree.path)
-    # Without this the session is denied every coordination call and works blind.
-    assert argv[argv.index("--allowedTools") + 1] == "mcp__lumberjack"
+    # Without these the session is denied every coordination call and cannot run the
+    # checks its own spec asks it for.
+    allowed = argv[argv.index("--allowedTools") + 1].split()
+    assert "mcp__lumberjack" in allowed
+    assert "Bash" in allowed
 
 
 async def test_an_mcp_config_is_written_pointing_at_this_stand(
@@ -316,6 +319,9 @@ async def test_coordination_tools_are_always_allowed(
     argv = argv_of(script)
     allowed = argv[argv.index("--allowedTools") + 1]
     assert allowed.startswith("mcp__lumberjack")
+    # Every spec asks the agent to run the checks; the first run could not, because
+    # Bash needed an approval no headless session can give.
+    assert "Bash" in allowed.split()
     assert "Bash(git:*)" in allowed
 
 

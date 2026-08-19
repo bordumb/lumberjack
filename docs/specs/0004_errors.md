@@ -3,6 +3,28 @@
 > Builds on [0001_SPEC.md](0001_SPEC.md) §14 (Safety), §19.3 (concurrency bugs found while building).
 > Sibling specs: [0002_telemetry.md](0002_telemetry.md), [0003_ux.md](0003_ux.md).
 
+## 0. House rules
+
+Binding, and shared with every sibling spec. [0000_house_rules.md](0000_house_rules.md)
+gives the reasoning.
+
+- **Logging** is the standard library: `log = logging.getLogger(__name__)`, configured
+  once in `cli/` and nowhere else. The ledger records what happened to the *work*; the
+  log records what happened to the *process*. `print()` belongs to `cli/` alone.
+- **Errors** never disappear. No bare `except Exception: pass` — catch the narrowest
+  type, log it, and say why continuing is correct. The taxonomy lives in
+  `domain/errors.py`; boundary-specific errors stay with their boundary.
+- **Dependencies** are a last resort. If you add one, run `uv lock` and commit the
+  lockfile in the same change, and say what you added in your handoff.
+- **Layering** from [0001_SPEC.md](0001_SPEC.md) §5 is not advisory. Every new module is
+  in `domain/`, `ports/`, `core/`, `adapters/`, `agents/`, `cli/`, `tui/` or `server/`.
+  Nothing at package root. Test doubles go in `tests/fakes.py`.
+- **Wrap, do not sprinkle.** Behaviour that applies to a whole boundary wraps the port,
+  following `adapters/projecting.py`.
+- **Verification**: run `uv run ruff check . && uv run ty check && uv run pytest`. If you
+  *cannot*, say so immediately via `post_note` and `message` — not in your final summary.
+  Reading the code is not verification; say which you did.
+
 ## 1. Goal
 
 Right now the harness fails silently, and it fails without limits.
@@ -28,8 +50,10 @@ while appearing healthy.
 
 ### 2.1 An error taxonomy
 
-One module, `src/lumberjack/errors.py`, with a small hierarchy under a
-`LumberjackError` base. `GitError` in `ports/git.py` moves under it (keep the old name
+One module, `src/lumberjack/domain/errors.py`, with a small hierarchy under a
+`LumberjackError` base. It goes in `domain/` because an error is vocabulary before it is
+control flow, and because `core/` and `adapters/` both need to raise these -- a module
+at package root would be outside the layering `0001_SPEC.md` §5 declares. `GitError` in `ports/git.py` moves under it (keep the old name
 importable). The distinction that matters is **transient vs terminal**, because it is
 the one the retry logic acts on:
 
@@ -123,6 +147,8 @@ to match — it names the reason and points at `request_land`.
 - [ ] Model provider failure degrades through `FallbackModel` rather than blocking.
 - [ ] `Stand.close()` distinguishes preserved-because-unlanded from
       preserved-because-cleanup-failed.
+- [ ] Every retry, degradation and swallowed-on-purpose failure appears in the log with
+      a reason, not only in the ledger.
 - [ ] `uv run ruff check .`, `uv run ty check`, `uv run pytest` all clean.
 
 ## 4. Out of scope
