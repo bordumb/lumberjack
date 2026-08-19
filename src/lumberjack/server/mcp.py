@@ -17,8 +17,10 @@ from mcp.server.fastmcp import FastMCP
 from lumberjack.adapters.ast_indexer import AstIndexer
 from lumberjack.adapters.clock import SystemClock
 from lumberjack.adapters.git_cli import GitCli
+from lumberjack.adapters.otel import build_telemetry
 from lumberjack.adapters.projecting import ProjectingLedger
 from lumberjack.adapters.sqlite_ledger import SqliteLedger
+from lumberjack.adapters.traced import instrumented
 from lumberjack.adapters.uv_gate import CommandGate
 from lumberjack.core.projections import Projections
 from lumberjack.core.services import Services
@@ -68,15 +70,22 @@ async def _open_services(repo: Path, stand: StandId) -> Services:
     inner = await SqliteLedger.open(stand, config.resolved_state_root() / stand / "ledger.db")
     ledger = ProjectingLedger(inner=inner, projections=projections)
     await projections.hydrate(ledger)
+    telemetry = build_telemetry(config.telemetry)
+    git, gate = instrumented(
+        git=GitCli(repo=repo),
+        gate=CommandGate(commands=config.gate_commands),
+        telemetry=telemetry,
+    )
     return Services.wire(
         stand=stand,
         config=config,
         clock=SystemClock(),
-        git=GitCli(repo=repo),
+        git=git,
         ledger=ledger,
         indexer=AstIndexer(),
-        gate=CommandGate(commands=config.gate_commands),
+        gate=gate,
         projections=projections,
+        telemetry=telemetry,
     )
 
 

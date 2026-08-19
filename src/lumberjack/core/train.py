@@ -32,6 +32,7 @@ from lumberjack.ports.clock import Clock
 from lumberjack.ports.gate import Gate
 from lumberjack.ports.git import GitBackend
 from lumberjack.ports.ledger import Ledger
+from lumberjack.ports.telemetry import NullTelemetry, Telemetry
 
 __all__ = ["LandOutcome", "MergeTrain", "TrainPosition"]
 
@@ -64,6 +65,7 @@ class MergeTrain:
     gate: Gate
     clock: Clock
     config: StandConfig
+    telemetry: Telemetry = field(default_factory=NullTelemetry)
     queue: list[WorkstreamId] = field(default_factory=list)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """The train is a train: exactly one integration at a time, from any caller."""
@@ -91,7 +93,13 @@ class MergeTrain:
             if not self.queue:
                 return None
             workstream = self.queue[0]
-            outcome = await self._land(workstream)
+            with self.telemetry.span("lj.train.integration", workstream=str(workstream)) as span:
+                outcome = await self._land(workstream)
+                span.set(status=outcome.status)
+            # The bounce rate.  A gate that is a safety net and a gate that is a money
+            # pit look identical from inside a run; this is the number that tells them
+            # apart, so it is counted for every terminal state, not only failures.
+            self.telemetry.counter("lj.train.integration", status=outcome.status)
             if self.queue and self.queue[0] == workstream:
                 self.queue.pop(0)
             return outcome

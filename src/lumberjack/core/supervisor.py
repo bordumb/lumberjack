@@ -17,16 +17,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 from pydantic_ai import Agent
+from pydantic_ai.models.instrumented import InstrumentationSettings
 
 from lumberjack.adapters.claude_code import ClaudeCodeRunner
 from lumberjack.agents.deps import ForemanDeps, NegotiatorDeps, WorkerDeps
 from lumberjack.agents.foreman import build_arbiter, build_planner
+from lumberjack.agents.instrumentation import instrumentation
 from lumberjack.agents.negotiator import build_negotiator
 from lumberjack.agents.outputs import (
     ForemanRuling,
@@ -45,6 +48,7 @@ from lumberjack.core.arbitration import policy_for
 from lumberjack.core.sensor import WorktreeSensor
 from lumberjack.core.services import Services
 from lumberjack.core.tasks import record_transition
+from lumberjack.core.usage import FOREMAN_USAGE_KEY
 from lumberjack.domain.accord import (
     Channel,
     ChannelState,
@@ -76,6 +80,7 @@ from lumberjack.domain.task import (
     TaskGraph,
     TaskSpec,
 )
+from lumberjack.domain.usage import UsageTotals
 from lumberjack.domain.workstream import Workstream, Worktree
 from lumberjack.ids import (
     AgentId,
@@ -152,23 +157,27 @@ class Supervisor:
     resume_bases: dict[TaskId, CommitSha] = field(default_factory=dict)
     """Per-task starting commits, so a workstream can pick up an earlier stand's branch."""
     _resolved: int = 0
+    _instrument: InstrumentationSettings = field(default_factory=instrumentation)
 
     def __post_init__(self) -> None:
         config = self.services.config
         model = config.model
         foreman_model = config.foreman_model or model
+        # Decided once, here, because this is the only place that has both the agents
+        # and the stand's policy on whether prompts may leave the machine.
+        self._instrument = instrumentation(capture_content=config.telemetry.capture_content)
         if self.policy is None:
             self.policy = policy_for(config.arbitration)
         if self.worker_agent is None:
-            self.worker_agent = build_worker(model)
+            self.worker_agent = build_worker(model, instrument=self._instrument)
         if self.runner is None:
             self.runner = self._default_runner()
         if self.planner_agent is None:
-            self.planner_agent = build_planner(foreman_model)
+            self.planner_agent = build_planner(foreman_model, instrument=self._instrument)
         if self.arbiter_agent is None:
-            self.arbiter_agent = build_arbiter(foreman_model)
+            self.arbiter_agent = build_arbiter(foreman_model, instrument=self._instrument)
         if self.negotiator_agent is None:
-            self.negotiator_agent = build_negotiator(model)
+            self.negotiator_agent = build_negotiator(model, instrument=self._instrument)
 
     def _runner_for(self, task: TaskId) -> WorkerRunner:
         """A runner bound to this task's model, when one was chosen for it."""
@@ -179,7 +188,7 @@ class Supervisor:
         if isinstance(self.runner, ClaudeCodeRunner):
             # The claude CLI takes a bare model name, not a provider-qualified one.
             return replace(self.runner, model=chosen.split(":", 1)[-1])
-        return PydanticAiRunner(agent=build_worker(chosen))
+        return PydanticAiRunner(agent=build_worker(chosen, instrument=self._instrument))
 
     def _default_runner(self) -> WorkerRunner:
         config = self.services.config
@@ -275,6 +284,14 @@ class Supervisor:
                 goal=goal,
                 repo_map=self.services.projections.repo_map,
             ),
+        )
+        # Keyed to the foreman rather than to a workstream: planning is spent before any
+        # workstream exists, and charging it to the first one would misattribute it.
+        self.services.usage.record(
+            FOREMAN_USAGE_KEY,
+            result.usage,
+            agent="foreman-planner",
+            model=self.services.config.foreman_model or self.services.config.model,
         )
         return await self.adopt(result.output)
 
@@ -479,28 +496,47 @@ class Supervisor:
         watcher = asyncio.create_task(
             sensor.watch(sensor_stop), name=f"lj-sensor-{workstream.workstream_id}"
         )
-        try:
-            assert self.runner is not None
-            runner = self._runner_for(spec.task_id)
-            output = await runner.run(workstream, spec, services)
-            await sensor.scan()
-            await self._settle(workstream, spec, output)
-        except Exception as error:
-            current = services.projections.tasks.get(spec.task_id)
-            if isinstance(current, Running):
-                await record_transition(
-                    services.ledger,
-                    services.projections,
-                    current.block(BlockReason.AGENT_ERROR, str(error)[:500]),
-                    actor=workstream.agent,
-                    detail=str(error)[:500],
+        # ``lj.agent.run``: wall-clock per worker, which the runner boundary cannot give
+        # -- it does not know the task, and the ClaudeCodeRunner reports no usage at all.
+        clock_started = time.perf_counter()
+        with services.telemetry.span(
+            "lj.agent.run",
+            stand=str(services.stand),
+            workstream=str(workstream.workstream_id),
+            agent=str(workstream.agent),
+            task=str(spec.task_id),
+        ) as span:
+            try:
+                assert self.runner is not None
+                runner = self._runner_for(spec.task_id)
+                output = await runner.run(workstream, spec, services)
+                span.set(outcome=type(output).__name__)
+                await sensor.scan()
+                await self._settle(workstream, spec, output)
+            except Exception as error:
+                span.set(outcome="error")
+                span.record_error(error)
+                current = services.projections.tasks.get(spec.task_id)
+                if isinstance(current, Running):
+                    await record_transition(
+                        services.ledger,
+                        services.projections,
+                        current.block(BlockReason.AGENT_ERROR, str(error)[:500]),
+                        actor=workstream.agent,
+                        detail=str(error)[:500],
+                    )
+            finally:
+                services.usage.add(
+                    workstream.workstream_id,
+                    UsageTotals(
+                        wall_clock=timedelta(seconds=time.perf_counter() - clock_started)
+                    ),
                 )
-        finally:
-            sensor_stop.set()
-            watcher.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await watcher
-            await services.broker.release_all(workstream.workstream_id)
+                sensor_stop.set()
+                watcher.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watcher
+                await services.broker.release_all(workstream.workstream_id)
 
     async def _settle(self, workstream: Workstream, spec: TaskSpec, report: WorkerReport) -> None:
         services = self.services
@@ -656,6 +692,7 @@ class Supervisor:
         """Alternate turns until the peers sign, escalate, or run out of budget."""
         assert self.negotiator_agent is not None
         services = self.services
+        turns = 0
         while not channel.exhausted(services.clock.now()):
             speaker = channel.whose_turn()
             peer = next(iter(channel.participants - {speaker}), speaker)
@@ -671,6 +708,13 @@ class Supervisor:
                     workstream=workstream,
                     peer=peer,
                 ),
+            )
+            turns += 1
+            services.usage.record(
+                workstream,
+                result.usage,
+                agent="negotiator",
+                model=services.config.model,
             )
             move = NegotiationMove(
                 by=speaker,
@@ -692,6 +736,18 @@ class Supervisor:
         await services.ledger.append(
             ChannelClosed(channel_id=channel.channel_id, state=channel.state.value)
         )
+        # The instrument that tests the central bet of this project -- that peers holding
+        # local context settle better than a manager does. Both the turn count and where
+        # the channel ended, because a settlement in nine turns is not the same result as
+        # a settlement in two.
+        settled = channel.state is ChannelState.SETTLED
+        services.telemetry.histogram(
+            "lj.negotiation.turns",
+            float(turns),
+            settled=settled,
+            escalated=not settled,
+            state=channel.state.value,
+        )
         return channel
 
     async def _ask_foreman(self, report: ConflictReport, channel: Channel | None) -> Directive:
@@ -705,6 +761,12 @@ class Supervisor:
                 goal=services.projections.goal,
                 repo_map=services.projections.repo_map,
             ),
+        )
+        services.usage.record(
+            FOREMAN_USAGE_KEY,
+            result.usage,
+            agent="foreman-arbiter",
+            model=services.config.foreman_model or services.config.model,
         )
         return Directive(
             conflict_id=report.conflict_id,

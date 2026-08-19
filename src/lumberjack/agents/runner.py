@@ -36,4 +36,13 @@ class PydanticAiRunner:
                 worktree=workstream.worktree,
             ),
         )
+        # The only place a worker's ``RunUsage`` exists.  The supervisor holds the
+        # ``WorkerOutput`` the port promises and nothing else, so accounting for the
+        # tokens has to happen on this side of the boundary or not at all.
+        services.usage.record(
+            workstream.workstream_id,
+            result.usage,
+            agent=str(workstream.agent),
+            model=services.config.model,
+        )
         return result.output

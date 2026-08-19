@@ -20,8 +20,10 @@ from pathlib import Path
 from lumberjack.adapters.ast_indexer import AstIndexer
 from lumberjack.adapters.clock import SystemClock
 from lumberjack.adapters.git_cli import GitCli
+from lumberjack.adapters.otel import build_telemetry
 from lumberjack.adapters.projecting import ProjectingLedger
 from lumberjack.adapters.sqlite_ledger import SqliteLedger
+from lumberjack.adapters.traced import instrumented
 from lumberjack.adapters.uv_gate import CommandGate
 from lumberjack.core.projections import Projections
 from lumberjack.core.services import Services
@@ -70,15 +72,22 @@ class Stand:
         inner = ledger or await SqliteLedger.open(
             stand, config.resolved_state_root() / stand / "ledger.db", clock=the_clock
         )
+        telemetry = build_telemetry(config.telemetry)
+        traced_git, traced_gate = instrumented(
+            git=git or GitCli(repo=config.repo),
+            gate=gate or CommandGate(commands=config.gate_commands),
+            telemetry=telemetry,
+        )
         services = Services.wire(
             stand=stand,
             config=config,
             clock=the_clock,
-            git=git or GitCli(repo=config.repo),
+            git=traced_git,
             ledger=ProjectingLedger(inner=inner, projections=projections),
             indexer=indexer or AstIndexer(),
-            gate=gate or CommandGate(commands=config.gate_commands),
+            gate=traced_gate,
             projections=projections,
+            telemetry=telemetry,
         )
         return cls(
             stand_id=stand,
@@ -118,15 +127,22 @@ class Stand:
         if config is not None:
             recorded = recorded.model_copy(update={"repo": config.repo})
 
+        telemetry = build_telemetry(recorded.telemetry)
+        traced_git, traced_gate = instrumented(
+            git=git or GitCli(repo=recorded.repo),
+            gate=CommandGate(commands=recorded.gate_commands),
+            telemetry=telemetry,
+        )
         services = Services.wire(
             stand=stand_id,
             config=recorded,
             clock=the_clock,
-            git=git or GitCli(repo=recorded.repo),
+            git=traced_git,
             ledger=ledger,
             indexer=AstIndexer(),
-            gate=CommandGate(commands=recorded.gate_commands),
+            gate=traced_gate,
             projections=projections,
+            telemetry=telemetry,
         )
         return cls(
             stand_id=stand_id,

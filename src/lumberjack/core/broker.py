@@ -18,7 +18,7 @@ agents learn about each other before they duplicate or contradict work.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lumberjack.core.projections import Projections
 from lumberjack.domain.claim import (
@@ -46,6 +46,7 @@ from lumberjack.domain.workstream import ArbitrationMode, StandConfig
 from lumberjack.ids import AgentId, LeaseId, WorkstreamId, new_lease_id
 from lumberjack.ports.clock import Clock
 from lumberjack.ports.ledger import Ledger
+from lumberjack.ports.telemetry import NullTelemetry, Telemetry
 
 __all__ = ["LeaseBroker"]
 
@@ -56,6 +57,7 @@ class LeaseBroker:
     projections: Projections
     clock: Clock
     config: StandConfig
+    telemetry: Telemetry = field(default_factory=NullTelemetry)
 
     @property
     def _deny_on_conflict(self) -> bool:
@@ -119,6 +121,10 @@ class LeaseBroker:
         await self.ledger.append(
             LeaseGrantedEvent(lease=lease, coexisting=coexisting), actor=claim.claimant
         )
+        # `coexisting` is the interesting half: it counts the times two agents were told
+        # about each other rather than made to take turns, which is the whole bet of the
+        # grant matrix and, until now, a thing nobody could measure.
+        self._decided(claim, "granted", coexisting=len(coexisting))
         return LeaseGranted(lease=lease, coexisting=coexisting)
 
     async def _queue(self, claim: Claim, blockers: tuple[AgentId, ...]) -> LeaseQueued:
@@ -132,6 +138,7 @@ class LeaseBroker:
             LeaseQueuedEvent(claim=claim, position=position, blockers=blockers),
             actor=claim.claimant,
         )
+        self._decided(claim, "queued")
         return LeaseQueued(claim=claim, position=position, blockers=blockers)
 
     async def _deny(
@@ -145,7 +152,20 @@ class LeaseBroker:
         await self.ledger.append(
             LeaseDeniedEvent(claim=claim, reason=reason, holder=holder), actor=claim.claimant
         )
+        self._decided(claim, "denied", reason=reason.value)
         return LeaseDenied(claim=claim, reason=reason, holder=holder, suggestion=suggestion)
+
+    def _decided(
+        self, claim: Claim, outcome: str, *, coexisting: int = 0, reason: str = ""
+    ) -> None:
+        """``lj.lease.decision``: how often declared intent actually collides."""
+        self.telemetry.counter(
+            "lj.lease.decision",
+            outcome=outcome,
+            mode=claim.mode.value,
+            coexisting=coexisting,
+            reason=reason,
+        )
 
     def _protected_hit(self, claim: Claim) -> str | None:
         from lumberjack.domain.claim import PathScope, SymbolScope

@@ -7,15 +7,19 @@ absent, the workers keep working.
 from __future__ import annotations
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.models.instrumented import InstrumentationSettings
 
 from lumberjack.agents.deps import ForemanDeps
+from lumberjack.agents.instrumentation import QUIET
 from lumberjack.agents.outputs import ForemanRuling, Plan
 from lumberjack.agents.prompts import FOREMAN
 
 __all__ = ["build_arbiter", "build_planner"]
 
 
-def build_planner(model: str | None = None) -> Agent[ForemanDeps, Plan]:
+def build_planner(
+    model: str | None = None, *, instrument: InstrumentationSettings | bool = QUIET
+) -> Agent[ForemanDeps, Plan]:
     agent = Agent[ForemanDeps, Plan](
         model,
         deps_type=ForemanDeps,
@@ -25,6 +29,7 @@ def build_planner(model: str | None = None) -> Agent[ForemanDeps, Plan]:
         defer_model_check=True,
         name="lumberjack-foreman-planner",
     )
+    agent.instrument = instrument
 
     @agent.instructions
     def repo_brief(ctx: RunContext[ForemanDeps]) -> str:
@@ -45,8 +50,10 @@ def build_planner(model: str | None = None) -> Agent[ForemanDeps, Plan]:
     return agent
 
 
-def build_arbiter(model: str | None = None) -> Agent[ForemanDeps, ForemanRuling]:
-    return Agent[ForemanDeps, ForemanRuling](
+def build_arbiter(
+    model: str | None = None, *, instrument: InstrumentationSettings | bool = QUIET
+) -> Agent[ForemanDeps, ForemanRuling]:
+    agent = Agent[ForemanDeps, ForemanRuling](
         model,
         deps_type=ForemanDeps,
         output_type=ForemanRuling,
@@ -55,3 +62,5 @@ def build_arbiter(model: str | None = None) -> Agent[ForemanDeps, ForemanRuling]
         defer_model_check=True,
         name="lumberjack-foreman-arbiter",
     )
+    agent.instrument = instrument
+    return agent

@@ -10,6 +10,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lumberjack.domain.accord import NegotiationLimits
+from lumberjack.domain.telemetry import TelemetryConfig
 from lumberjack.ids import AgentId, CommitSha, RepoPath, StandId, TaskId, WorkstreamId
 
 __all__ = [
@@ -139,6 +140,7 @@ class StandConfig(BaseModel):
     digest_note_cap: int = Field(default=8, ge=0)
     negotiation: NegotiationLimits = NegotiationLimits()
     budget: Budget = Budget()
+    telemetry: TelemetryConfig = TelemetryConfig()
     protected_paths: tuple[str, ...] = (".lumberjack/**", ".git/**")
     gate_commands: tuple[tuple[str, ...], ...] = (
         ("uv", "run", "ruff", "check", "."),

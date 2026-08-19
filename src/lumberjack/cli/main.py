@@ -287,7 +287,9 @@ async def _resume_bases(repo: Path, stand: str, plan: Plan) -> dict[TaskId, Comm
 async def _open_stand(repo: Path, stand: StandId):  # noqa: ANN202 - internal helper
     """Open a stand's ledger for writing, with projections hydrated."""
     from lumberjack.adapters.ast_indexer import AstIndexer
+    from lumberjack.adapters.otel import build_telemetry
     from lumberjack.adapters.projecting import ProjectingLedger
+    from lumberjack.adapters.traced import instrumented
     from lumberjack.adapters.uv_gate import NullGate
     from lumberjack.core.services import Services
 
@@ -296,15 +298,18 @@ async def _open_stand(repo: Path, stand: StandId):  # noqa: ANN202 - internal he
     inner = await SqliteLedger.open(stand, _state_root(repo) / stand / "ledger.db")
     ledger = ProjectingLedger(inner=inner, projections=projections)
     await projections.hydrate(ledger)
+    telemetry = build_telemetry(config.telemetry)
+    git, gate = instrumented(git=GitCli(repo=repo), gate=NullGate(), telemetry=telemetry)
     services = Services.wire(
         stand=stand,
         config=config,
         clock=SystemClock(),
-        git=GitCli(repo=repo),
+        git=git,
         ledger=ledger,
         indexer=AstIndexer(),
-        gate=NullGate(),
+        gate=gate,
         projections=projections,
+        telemetry=telemetry,
     )
     return services, inner
 
