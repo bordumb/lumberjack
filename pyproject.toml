@@ -11,6 +11,7 @@ dependencies = [
     "aiosqlite>=0.20",
     "watchfiles>=1.0",
     "cyclopts>=3.0",
+    "rich>=13.0",
     "textual>=1.0",
 ]
 
