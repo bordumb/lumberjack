@@ -2,6 +2,7 @@
 
 > Builds on [0001_SPEC.md](0001_SPEC.md) §13 (Observability) and §14 (Safety).
 > Sibling specs: [0003_ux.md](0003_ux.md), [0004_errors.md](0004_errors.md).
+> The web interface is [0005_ui.md](0005_ui.md).
 
 ## 0. House rules
 

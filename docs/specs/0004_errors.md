@@ -2,6 +2,7 @@
 
 > Builds on [0001_SPEC.md](0001_SPEC.md) §14 (Safety), §19.3 (concurrency bugs found while building).
 > Sibling specs: [0002_telemetry.md](0002_telemetry.md), [0003_ux.md](0003_ux.md).
+> The web interface is [0005_ui.md](0005_ui.md).
 
 ## 0. House rules
 
