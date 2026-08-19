@@ -24,6 +24,7 @@ from lumberjack.domain.events import (
     ChannelClosed,
     ChannelOpened,
     ClaimRequested,
+    ComponentFailed,
     ConflictCleared,
     ConflictDetected,
     ContractFrozen,
@@ -148,6 +149,9 @@ class Projections:
 
     repo_map: RepoMap = field(default_factory=RepoMap)
 
+    degraded: dict[str, ComponentFailed] = field(default_factory=dict)
+    """The most recent failure of each harness component, healthy ones absent."""
+
     # -- folding ---------------------------------------------------------------------
 
     async def hydrate(self, ledger: Ledger) -> None:
@@ -175,6 +179,10 @@ class Projections:
                 self.name = payload.name
             case StandHalted():
                 self.halted = True
+            case ComponentFailed():
+                # Last failure wins: what matters downstream is the current state of a
+                # component, and the full history is still in the ledger for replay.
+                self.degraded[payload.component] = payload
             case TaskPlanned():
                 self.specs[payload.spec.task_id] = payload.spec
                 self.tasks[payload.spec.task_id] = Pending(spec=payload.spec)
@@ -399,6 +407,18 @@ class Projections:
                 scored.append((score * 1000 + index, note))
         scored.sort(key=lambda item: item[0], reverse=True)
         return tuple(note for _, note in scored[:limit])
+
+    def stopped_components(self) -> tuple[ComponentFailed, ...]:
+        """Components that gave up.
+
+        A single failure is noise; a loop that has stopped changes what a reasonable
+        agent would do, which is why only these reach the awareness digest.
+        """
+        return tuple(
+            failure
+            for _, failure in sorted(self.degraded.items())
+            if failure.giving_up
+        )
 
     def finished(self) -> bool:
         """Whether this stand is over: halted, or every task reached a terminal state."""

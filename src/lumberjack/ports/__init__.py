@@ -8,6 +8,7 @@ from lumberjack.ports.gate import Gate
 from lumberjack.ports.git import GitBackend, GitError
 from lumberjack.ports.indexer import SymbolIndexer
 from lumberjack.ports.ledger import Ledger
+from lumberjack.ports.telemetry import NullTelemetry, Span, Telemetry
 
 __all__ = [
     "ArbitrationContext",
@@ -19,5 +20,8 @@ __all__ = [
     "GitError",
     "Ledger",
     "MessageBus",
+    "NullTelemetry",
+    "Span",
     "SymbolIndexer",
+    "Telemetry",
 ]

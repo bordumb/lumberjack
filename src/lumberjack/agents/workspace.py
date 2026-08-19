@@ -54,11 +54,19 @@ def _resolve(ctx: RunContext[WorkerDeps], path: str) -> Path:
     root = ctx.deps.worktree.path.resolve()
     target = (root / path).resolve()
     if not target.is_relative_to(root):
-        raise ModelRetry(f"{path!r} is outside your worktree; you may only edit your own")
+        raise ModelRetry(
+            f"{path!r} is outside your worktree and was not touched. Paths are relative "
+            f"to your own worktree root ({root}); if you need a change somewhere another "
+            "agent owns, message them instead."
+        )
     relative = target.relative_to(root).as_posix()
     for guard in ctx.deps.services.config.protected_paths:
         if matches(guard, relative):
-            raise ModelRetry(f"{relative} is managed by the harness and must not be edited")
+            raise ModelRetry(
+                f"{relative} is managed by the harness and was not touched. Coordination "
+                "state is not yours to edit; use the coordination tools (claim, message, "
+                "request_land) to get the same effect."
+            )
     return target
 
 
@@ -67,7 +75,10 @@ async def read_file(ctx: RunContext[WorkerDeps], path: str) -> str:
     """Read a file from your worktree."""
     target = _resolve(ctx, path)
     if not target.is_file():
-        raise ModelRetry(f"{path} does not exist in your worktree")
+        raise ModelRetry(
+            f"{path} does not exist in your worktree. Use list_dir to see what is there, "
+            "or search(pattern) to find it by content."
+        )
     return target.read_text(encoding="utf-8", errors="replace")[:_MAX_READ]
 
 
@@ -86,7 +97,10 @@ async def list_dir(ctx: RunContext[WorkerDeps], path: str = ".") -> tuple[str, .
     """List a directory in your worktree."""
     target = _resolve(ctx, path) if path not in ("", ".") else ctx.deps.worktree.path
     if not target.is_dir():
-        raise ModelRetry(f"{path} is not a directory")
+        raise ModelRetry(
+            f"{path} is not a directory. Pass a directory, or read_file({path!r}) if you "
+            "meant to read it."
+        )
     return tuple(
         sorted(
             f"{item.name}/" if item.is_dir() else item.name
@@ -127,7 +141,10 @@ async def run_command(
     and the harness owns refs.  Use ``request_land`` to integrate your work.
     """
     if not command:
-        raise ModelRetry("command must not be empty")
+        raise ModelRetry(
+            "command must not be empty and nothing ran. Pass argv as a list, e.g. "
+            "['uv', 'run', 'pytest', '-q']."
+        )
     if Path(command[0]).name == "git" and len(command) > 1:
         subcommand = next((part for part in command[1:] if not part.startswith("-")), "")
         if subcommand in FORBIDDEN_GIT:
@@ -147,7 +164,10 @@ async def run_command(
     except TimeoutError:
         return CommandResult(exit_code=124, output=f"timed out after {timeout_seconds}s")
     except (OSError, ValueError) as error:
-        raise ModelRetry(f"could not run {command[0]!r}: {error}") from error
+        raise ModelRetry(
+            f"could not run {command[0]!r}: {error}. Nothing ran. Check the binary exists "
+            "in this worktree, and reach project tools through `uv run <tool>`."
+        ) from error
     return CommandResult(
         exit_code=process.returncode or 0,
         output=raw.decode("utf-8", "replace")[-20_000:],

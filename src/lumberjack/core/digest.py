@@ -37,6 +37,9 @@ class AwarenessDigest(BaseModel):
     comments: tuple[ReviewComment, ...] = ()
     drift: DriftStatus = DriftStatus()
     violations: tuple[str, ...] = ()
+    degraded: tuple[str, ...] = ()
+    """Harness components that have stopped.  An agent working without conflict
+    detection deserves to know that is what is happening; it changes what it should do."""
 
     @property
     def blocking(self) -> tuple[ConflictReport, ...]:
@@ -44,7 +47,14 @@ class AwarenessDigest(BaseModel):
 
     @property
     def quiet(self) -> bool:
-        return not (self.peers or self.conflicts or self.inbox or self.violations or self.comments)
+        return not (
+            self.peers
+            or self.conflicts
+            or self.inbox
+            or self.violations
+            or self.comments
+            or self.degraded
+        )
 
 
 @dataclass(slots=True)
@@ -76,6 +86,9 @@ class DigestBuilder:
                 for item in self.projections.violations[-5:]
                 if item.workstream == workstream
             ),
+            degraded=tuple(
+                item.summary() for item in self.projections.stopped_components()
+            ),
         )
 
     def render(self, workstream: WorkstreamId) -> str:
@@ -89,6 +102,13 @@ def render_digest(digest: AwarenessDigest, config: StandConfig) -> str:
 
     sections: list[tuple[str, list[str]]] = []
 
+    if digest.degraded:
+        sections.append(
+            (
+                "HARNESS DEGRADED -- work accordingly",
+                [f"- {item}\n  {_degradation_advice(item)}" for item in digest.degraded[:4]],
+            )
+        )
     if digest.comments:
         sections.append(
             (
@@ -143,6 +163,32 @@ def render_digest(digest: AwarenessDigest, config: StandConfig) -> str:
         sections = [item for item in sections if item[0] != victim]
     text = _assemble(sections)
     return text if len(text) <= budget else text[: budget - 3] + "..."
+
+
+_DEGRADATION_ADVICE: dict[str, str] = {
+    "oracle": (
+        "nothing is predicting conflicts for you: call check_merge() yourself before "
+        "you restructure anything, and message peers instead of relying on the digest"
+    ),
+    "conflicts": (
+        "conflicts are still detected but nobody is arbitrating them: settle overlaps "
+        "by message before they reach the train"
+    ),
+    "train": "nothing is landing automatically; request_land queues but will not integrate",
+    "sync": (
+        "events from agents outside this process are not being folded in; "
+        "your digest may be stale"
+    ),
+}
+
+_GENERIC_ADVICE = (
+    "this part of the harness is not running; verify by hand what it would have caught"
+)
+
+
+def _degradation_advice(summary: str) -> str:
+    component = summary.split(" ", 1)[0]
+    return _DEGRADATION_ADVICE.get(component, _GENERIC_ADVICE)
 
 
 def _conflict_line(report: ConflictReport) -> str:

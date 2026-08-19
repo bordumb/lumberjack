@@ -24,6 +24,7 @@ from lumberjack.domain.workstream import StandConfig, Workstream
 from lumberjack.ids import (
     AccordId,
     AgentId,
+    ArtifactRef,
     ChannelId,
     CommentId,
     CommitSha,
@@ -44,6 +45,7 @@ __all__ = [
     "ChannelClosed",
     "ChannelOpened",
     "ClaimRequested",
+    "ComponentFailed",
     "ConflictCleared",
     "ConflictDetected",
     "ContractFrozen",
@@ -120,6 +122,32 @@ class StandResumed(_Event):
 class StandRenamed(_Event):
     kind: Literal["stand_renamed"] = "stand_renamed"
     name: str
+
+
+class ComponentFailed(_Event):
+    """A part of the harness failed, and said so.
+
+    The worst failure mode this system has is degrading quietly: the oracle raises on
+    every probe, conflicts stop being detected, and the stand keeps looking healthy
+    while the agents produce work that will not merge.  This event is what makes that
+    visible -- to ``lj status``, to the dashboard, to replay, and (when ``giving_up``)
+    to every agent's awareness digest.
+    """
+
+    kind: Literal["component_failed"] = "component_failed"
+    component: str
+    """``oracle``, ``train``, ``conflicts``, ``sync``, ``worker``, ``sensor``."""
+    error: str
+    consecutive: int = 1
+    """How many times running this component has now failed."""
+    giving_up: bool = False
+    """Whether the loop stopped rather than spin on the same failure for ever."""
+    traceback_ref: ArtifactRef | None = None
+    workstream: WorkstreamId | None = None
+
+    def summary(self) -> str:
+        state = "stopped" if self.giving_up else f"failure {self.consecutive}"
+        return f"{self.component} {state}: {self.error}"
 
 
 class StandHalted(_Event):
@@ -379,6 +407,7 @@ EventPayload = Annotated[
     | StandHalted
     | StandRenamed
     | StandResumed
+    | ComponentFailed
     | TaskPlanned
     | TaskAssigned
     | TaskStateChanged

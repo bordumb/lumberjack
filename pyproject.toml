@@ -11,7 +11,17 @@ dependencies = [
     "aiosqlite>=0.20",
     "watchfiles>=1.0",
     "cyclopts>=3.0",
+    "rich>=13.0",
     "textual>=1.0",
+]
+
+[project.optional-dependencies]
+# Optional on purpose: NullTelemetry is the default, so the harness runs and the test
+# suite stays fast with none of this installed. `uv sync --extra telemetry` turns it on.
+# Logfire needs nothing extra -- it speaks OTLP.
+telemetry = [
+    "opentelemetry-sdk>=1.30",
+    "opentelemetry-exporter-otlp-proto-http>=1.30",
 ]
 
 [project.scripts]
@@ -50,6 +60,10 @@ ignore = ["ANN401", "ASYNC240", "B008", "TC001", "TC002", "TC003"]
 # ASYNC240: reading a fixture file inside an async test is not a blocking concern.
 "tests/**" = ["ANN", "A002", "ASYNC240"]
 
+[tool.ruff.lint.isort]
+# `tests` is first-party: the shared doubles in tests/fakes.py are imported by name.
+known-first-party = ["lumberjack", "tests"]
+
 [tool.ruff.lint.flake8-type-checking]
 runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 runtime-evaluated-decorators = ["pydantic.validate_call", "dataclasses.dataclass"]
@@ -61,9 +75,21 @@ unused-ignore-comment = "error"
 [tool.ty.src]
 include = ["src", "tests"]
 
+# The OpenTelemetry SDK lives behind the `telemetry` extra, so it is absent from a
+# default `uv sync` and unresolvable by definition. Scoped to the one adapter that
+# imports it, and only for that rule, so a genuine typo anywhere else still fails.
+[[tool.ty.overrides]]
+include = ["src/lumberjack/adapters/otel.py"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# So `from tests.fakes import ...` resolves. The house rules put shared test doubles in
+# tests/fakes.py, and without the repo root on sys.path that import does not exist.
+pythonpath = ["."]
 filterwarnings = [
     "error",
     # asyncio finalizes subprocess transports at collection time, in whatever test

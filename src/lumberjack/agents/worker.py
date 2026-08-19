@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.models import Model
+from pydantic_ai.models.instrumented import InstrumentationSettings
 
 from lumberjack.agents.deps import WorkerDeps
+from lumberjack.agents.instrumentation import QUIET
 from lumberjack.agents.outputs import (
     TaskBlocked,
     TaskCompleted,
@@ -18,7 +21,9 @@ from lumberjack.agents.workspace import workspace_toolset
 __all__ = ["build_worker", "worker"]
 
 
-def build_worker(model: str | None = None) -> Agent[WorkerDeps, WorkerOutput]:
+def build_worker(
+    model: str | Model | None = None, *, instrument: InstrumentationSettings | bool = QUIET
+) -> Agent[WorkerDeps, WorkerOutput]:
     agent = Agent[WorkerDeps, WorkerOutput](
         model,
         deps_type=WorkerDeps,
@@ -29,6 +34,9 @@ def build_worker(model: str | None = None) -> Agent[WorkerDeps, WorkerOutput]:
         defer_model_check=True,
         name="lumberjack-worker",
     )
+    # Set after construction: `instrument` is a property on Agent in pydantic-ai 1.x,
+    # not a constructor argument.
+    agent.instrument = instrument
 
     @agent.instructions
     def task_brief(ctx: RunContext[WorkerDeps]) -> str:

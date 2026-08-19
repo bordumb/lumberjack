@@ -11,6 +11,7 @@ into an unreferenced commit first, so agents never have to commit to become visi
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from lumberjack.core.projections import Projections
@@ -27,6 +28,7 @@ from lumberjack.ids import CommitSha, RepoPath, WorkstreamId, new_conflict_id
 from lumberjack.ports.clock import Clock
 from lumberjack.ports.git import GitBackend
 from lumberjack.ports.ledger import Ledger
+from lumberjack.ports.telemetry import NullTelemetry, Telemetry
 
 __all__ = ["ConflictOracle", "PairKey"]
 
@@ -48,6 +50,7 @@ class ConflictOracle:
     projections: Projections
     clock: Clock
     config: StandConfig
+    telemetry: Telemetry = field(default_factory=NullTelemetry)
     snapshots: dict[WorkstreamId, Snapshot] = field(default_factory=dict)
     open_pairs: dict[PairKey, ConflictReport] = field(default_factory=dict)
 
@@ -86,10 +89,14 @@ class ConflictOracle:
         it is a conflict the agents have already resolved, still on their screen.
         """
         key: PairKey = (left, right) if left <= right else (right, left)
+        # The unit cost of the O(n^2) sweep, and therefore the only evidence that can
+        # settle "optimal N" (0001_SPEC.md §18.2).  Timed from here so the prefilter's
+        # saving shows up as the cheap probes it makes, not as probes that never happened.
+        started = time.perf_counter()
         left_snapshot = await self._snapshot_for(left, refresh=refresh)
         right_snapshot = await self._snapshot_for(right, refresh=refresh)
         if left_snapshot is None or right_snapshot is None:
-            return None
+            return None  # nothing was probed, so there is nothing to time
 
         # The cheap prefilter that keeps the O(n^2) sweep affordable: if the two
         # workstreams have not touched a common path, git cannot possibly conflict.
@@ -97,10 +104,12 @@ class ConflictOracle:
         right_paths = set(self.projections.observed_paths(right)) | set(right_snapshot.paths)
         if left_paths and right_paths and not (left_paths & right_paths):
             await self._clear(key, "no common paths")
+            self._probed(started, clean=True, prefiltered=True)
             return None
 
         base = await self.git.merge_base(left_snapshot.commit, right_snapshot.commit)
         merged = await self.git.merge_tree(left_snapshot.commit, right_snapshot.commit, base=base)
+        self._probed(started, clean=merged.clean, prefiltered=False)
         if merged.clean:
             await self._clear(key, "oracle: merge is clean")
             return None
@@ -110,6 +119,14 @@ class ConflictOracle:
             severity=Severity.BLOCK,
             paths=merged.conflicted,
             evidence=merged.messages,
+        )
+
+    def _probed(self, started: float, *, clean: bool, prefiltered: bool) -> None:
+        self.telemetry.histogram(
+            "lj.oracle.probe_pair",
+            (time.perf_counter() - started) * 1000,
+            clean=clean,
+            prefiltered=prefiltered,
         )
 
     async def _snapshot_for(self, workstream: WorkstreamId, *, refresh: bool) -> Snapshot | None:
@@ -202,6 +219,11 @@ class ConflictOracle:
             await self._clear(key, "superseded")
         self.open_pairs[key] = report
         await self.ledger.append(ConflictDetected(report=report))
+        # Counted per raise, not per open conflict: whether the oracle earns its keep is
+        # a question about how often it finds something, not how much is outstanding.
+        self.telemetry.counter(
+            "lj.oracle.conflict", source=source.value, severity=severity.label
+        )
         return report
 
     def _symbols_at(self, key: PairKey, path: RepoPath) -> tuple[SymbolRef, ...]:

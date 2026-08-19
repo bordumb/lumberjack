@@ -106,7 +106,11 @@ async def claim(
     when someone changes a file you depend on.
     """
     if not patterns:
-        raise ModelRetry("claim at least one path or glob")
+        raise ModelRetry(
+            "claim at least one path or glob before you edit -- nothing was claimed. "
+            "Call claim(patterns=['src/pkg/thing.py'], mode='edit', rationale='why') "
+            "with the files you are about to touch."
+        )
     decision = await ctx.deps.services.broker.request(
         Claim(
             claimant=ctx.deps.identity,
@@ -133,7 +137,10 @@ async def claim_symbols(
     harness tell you apart, where a file-level claim would make you queue needlessly.
     """
     if not symbols:
-        raise ModelRetry("claim at least one symbol")
+        raise ModelRetry(
+            "claim at least one symbol -- nothing was claimed. Pass the definitions you "
+            "are about to change, or use claim(patterns=[...]) if you mean whole files."
+        )
     decision = await ctx.deps.services.broker.request(
         Claim(
             claimant=ctx.deps.identity,
@@ -308,7 +315,9 @@ async def propose_amendment(
     if contract is None:
         raise ModelRetry(
             f"no contract {contract_id}; known contracts: "
-            f"{', '.join(services.projections.contracts) or 'none'}"
+            f"{', '.join(services.projections.contracts) or 'none'}. "
+            "Nothing was proposed. If you are not changing a frozen interface you do not "
+            "need this tool -- just make the edit."
         )
     proposal = AmendmentProposal(
         proposal_id=new_proposal_id(),
@@ -365,7 +374,13 @@ async def check_merge(ctx: RunContext[WorkerDeps], against: str = "integration")
 
     peer = services.projections.workstream_of(AgentId(against))
     if peer is None:
-        raise ModelRetry(f"no active agent {against!r}; use 'integration' or a peer's id")
+        peers = ", ".join(
+            str(item.agent) for item in services.projections.active_workstreams()
+        )
+        raise ModelRetry(
+            f"no active agent {against!r}, so nothing was checked. Call check_merge() with "
+            f"no argument for the integration branch, or one of: {peers or 'no peers yet'}."
+        )
     report = await services.oracle.probe_pair(ctx.deps.workstream, peer)
     if report is None:
         return MergeCheck(clean=True, against=against, detail="merges cleanly")
@@ -395,7 +410,10 @@ async def request_land(ctx: RunContext[WorkerDeps]) -> str:
 async def split_task(ctx: RunContext[WorkerDeps], titles_and_intents: list[tuple[str, str]]) -> str:
     """Propose breaking this task up when it turns out to be bigger than it looked."""
     if len(titles_and_intents) < 2:
-        raise ModelRetry("a split needs at least two tasks")
+        raise ModelRetry(
+            "a split needs at least two tasks and nothing was created. Either pass two "
+            "or more (title, intent) pairs, or keep going on this task as it stands."
+        )
     from lumberjack.domain.events import TaskPlanned
     from lumberjack.domain.task import TaskSpec
 
