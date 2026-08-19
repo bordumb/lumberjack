@@ -15,6 +15,7 @@ being told to.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from dataclasses import dataclass
@@ -30,6 +31,8 @@ from lumberjack.ids import StandId
 from lumberjack.ports.git import GitBackend, GitError
 
 __all__ = ["DeletionPlan", "StandControl", "stand_alive", "supervisor_alive"]
+
+log = logging.getLogger(__name__)
 
 
 def supervisor_alive(pid: int | None) -> bool | None:
@@ -134,8 +137,17 @@ class StandControl:
         for item in projections.workstreams.values():
             if item.worktree.path.exists():
                 try:
-                    await git.remove_worktree(item.worktree, force=True)  # type: ignore[attr-defined]
-                except Exception:
+                    await git.remove_worktree(item.worktree, force=True)
+                except (GitError, OSError) as error:
+                    # The caller has already been shown what this destroys and asked
+                    # for it anyway, so a git that will not let go of the worktree is
+                    # not a reason to leave the directory behind -- but it is worth
+                    # saying, because the two paths leave different debris in `.git`.
+                    log.warning(
+                        "git could not remove %s (%s); deleting the directory instead",
+                        item.worktree.path,
+                        error,
+                    )
                     shutil.rmtree(item.worktree.path, ignore_errors=True)
         if drop_branches:
             for branch in plan.branches:

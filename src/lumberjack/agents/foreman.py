@@ -7,6 +7,7 @@ absent, the workers keep working.
 from __future__ import annotations
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.models import Model
 from pydantic_ai.models.instrumented import InstrumentationSettings
 
 from lumberjack.agents.deps import ForemanDeps
@@ -18,7 +19,7 @@ __all__ = ["build_arbiter", "build_planner"]
 
 
 def build_planner(
-    model: str | None = None, *, instrument: InstrumentationSettings | bool = QUIET
+    model: str | Model | None = None, *, instrument: InstrumentationSettings | bool = QUIET
 ) -> Agent[ForemanDeps, Plan]:
     agent = Agent[ForemanDeps, Plan](
         model,
@@ -51,7 +52,7 @@ def build_planner(
 
 
 def build_arbiter(
-    model: str | None = None, *, instrument: InstrumentationSettings | bool = QUIET
+    model: str | Model | None = None, *, instrument: InstrumentationSettings | bool = QUIET
 ) -> Agent[ForemanDeps, ForemanRuling]:
     agent = Agent[ForemanDeps, ForemanRuling](
         model,

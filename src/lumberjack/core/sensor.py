@@ -16,11 +16,11 @@ catch the failure modes that pure textual conflict detection misses:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from dataclasses import dataclass, field
 
 from lumberjack.core.broker import LeaseBroker
 from lumberjack.core.projections import Projections
+from lumberjack.core.resilience import LoopGuard
 from lumberjack.domain.claim import AccessMode, Claim, PathScope, scopes_overlap
 from lumberjack.domain.conflict import (
     ConflictedFile,
@@ -328,7 +328,12 @@ class WorktreeSensor:
     # -- watching --------------------------------------------------------------------
 
     async def watch(self, stop: asyncio.Event) -> None:
-        """Debounced filesystem watch.  Falls back to polling if watchfiles is absent."""
+        """Debounced filesystem watch.  Falls back to polling if watchfiles is absent.
+
+        ``stop`` must be private to this sensor: ``watchfiles`` *sets* the event it is
+        handed when its watch ends, so a shared one would let the first worker to
+        finish shut down every other workstream.
+        """
         try:
             from watchfiles import awatch
         except ImportError:  # pragma: no cover - watchfiles is a hard dependency
@@ -336,17 +341,37 @@ class WorktreeSensor:
             return
 
         debounce = int(self.config.sensor_debounce.total_seconds() * 1000)
+        guard = self._guard()
         async for _ in awatch(
             self.workstream.worktree.path,
             stop_event=stop,
             debounce=max(50, debounce),
             ignore_permission_denied=True,
         ):
-            with contextlib.suppress(Exception):
-                await self.scan()
+            if not await guard.attempt(self.scan_quietly):
+                return
 
     async def _poll(self, stop: asyncio.Event) -> None:  # pragma: no cover
+        guard = self._guard()
         while not stop.is_set():
-            with contextlib.suppress(Exception):
-                await self.scan()
+            if not await guard.attempt(self.scan_quietly):
+                return
             await self.clock.sleep(self.config.sensor_debounce)
+
+    async def scan_quietly(self) -> None:
+        """:meth:`scan` with its return value dropped, for the watch loops."""
+        await self.scan()
+
+    def _guard(self) -> LoopGuard:
+        """A sensor that keeps failing stops and says so.
+
+        A worktree can vanish, and the delta it would have published is what every
+        derived check reads. Retrying the same broken scan for the length of a stand
+        looks identical, from outside, to an agent that has stopped editing files.
+        """
+        return LoopGuard(
+            component="sensor",
+            ledger=self.ledger,
+            limit=self.config.loop_failure_limit,
+            workstream=self.workstream_id,
+        )
