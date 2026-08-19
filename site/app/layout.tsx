@@ -27,7 +27,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full">
         <div className="flex h-screen">
-          <Suspense fallback={<div className="w-64 shrink-0 border-r border-border/60" />}>
+          <Suspense fallback={<div className="w-60 shrink-0 border-r border-border" />}>
             <Nav />
           </Suspense>
           <div className="min-w-0 flex-1 overflow-auto">{children}</div>

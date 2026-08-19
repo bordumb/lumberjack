@@ -4,12 +4,53 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * One design language, defined once.
+ *
+ * Every size, radius, weight and colour a surface is allowed to use is a token below.
+ * The rule that keeps it minimal is arithmetic: five type sizes, one radius, one border,
+ * four status hues. A component that needs a sixth size is a component that has not
+ * decided what it is, so `text-[11.5px]` and `border-border/60` do not appear anywhere.
+ */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, SFMono-Regular, monospace;
   --font-heading: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+
+  /*
+   * The scale. A dense operator tool reads small, so the whole thing is shifted down
+   * from Tailwind's defaults rather than reached around with arbitrary values:
+   *
+   *   2xs  meta that must not compete -- timestamps, hint lines, uppercase eyebrows
+   *   xs   mono chrome -- paths, ids, counts, badges
+   *   sm   the default: every label, button, row and control
+   *   base prose -- notes and what an agent says
+   *   lg   section headings
+   *   xl   page titles
+   *   2xl  a stat, the one number on a tile
+   */
+  --text-2xs: 0.625rem;
+  --text-2xs--line-height: 1rem;
+  --text-xs: 0.6875rem;
+  --text-xs--line-height: 1.125rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg: 0.9375rem;
+  --text-lg--line-height: 1.375rem;
+  --text-xl: 1.1875rem;
+  --text-xl--line-height: 1.5rem;
+  --text-2xl: 1.75rem;
+  --text-2xl--line-height: 1.75rem;
+
+  /* Titles tighten as they grow; body text never does. */
+  --tracking-tight: -0.011em;
+  --tracking-tighter: -0.022em;
+  --tracking-wider: 0.08em;
+
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -27,6 +68,18 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+
+  /*
+   * Status, named by what it means rather than what colour it is. `emerald-500` in a
+   * component is a decision that cannot be revisited from one place; `text-success` is.
+   * All four are desaturated on purpose -- status should register at a glance without
+   * turning a dense page into a set of traffic lights.
+   */
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-danger: var(--destructive);
+
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -39,82 +92,99 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
+
+  /*
+   * Two radii, both derived. Controls take `md`, panels take `lg`, and nothing takes a
+   * pill except a status dot -- rounded corners are the loudest thing a flat interface
+   * has, so it spends them sparingly.
+   */
+  --radius-sm: calc(var(--radius) - 3px);
+  --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+  --radius-xl: var(--radius);
+  --radius-2xl: var(--radius);
+  --radius-3xl: var(--radius);
+  --radius-4xl: var(--radius);
+
+  /* One elevation, for the only things that float: dialogs, menus, hover cards. */
+  --shadow-overlay: 0 16px 48px -12px oklch(0 0 0 / 60%);
 }
 
 :root {
   --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --foreground: oklch(0.16 0 0);
+  --card: oklch(0.985 0 0);
+  --card-foreground: oklch(0.16 0 0);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.16 0 0);
+  --primary: oklch(0.2 0 0);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --secondary: oklch(0.96 0 0);
+  --secondary-foreground: oklch(0.2 0 0);
+  --muted: oklch(0.96 0 0);
+  --muted-foreground: oklch(0.53 0 0);
+  --accent: oklch(0.96 0 0);
+  --accent-foreground: oklch(0.2 0 0);
+  --destructive: oklch(0.55 0.19 27);
+  --success: oklch(0.58 0.11 158);
+  --warning: oklch(0.66 0.11 72);
+  --info: oklch(0.58 0.1 240);
+  /* The hairline is the token. No component divides it down further. */
+  --border: oklch(0 0 0 / 9%);
+  --input: oklch(0 0 0 / 12%);
+  --ring: oklch(0.7 0 0);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
+  --radius: 0.5rem;
   --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.16 0 0);
+  --sidebar-primary: oklch(0.2 0 0);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar-accent: oklch(0.96 0 0);
+  --sidebar-accent-foreground: oklch(0.2 0 0);
+  --sidebar-border: oklch(0 0 0 / 9%);
+  --sidebar-ring: oklch(0.7 0 0);
 }
 
 .dark {
   --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
+  --foreground: oklch(0.96 0 0);
+  /* A card is a shade, not a box: it lifts off the page instead of drawing a frame. */
+  --card: oklch(0.185 0 0);
+  --card-foreground: oklch(0.96 0 0);
   --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+  --popover-foreground: oklch(0.96 0 0);
+  --primary: oklch(0.93 0 0);
+  --primary-foreground: oklch(0.185 0 0);
+  --secondary: oklch(0.245 0 0);
+  --secondary-foreground: oklch(0.96 0 0);
+  --muted: oklch(0.245 0 0);
+  --muted-foreground: oklch(0.65 0 0);
+  --accent: oklch(0.245 0 0);
+  --accent-foreground: oklch(0.96 0 0);
+  --destructive: oklch(0.68 0.17 22);
+  --success: oklch(0.74 0.13 158);
+  --warning: oklch(0.79 0.12 78);
+  --info: oklch(0.72 0.11 240);
+  --border: oklch(1 0 0 / 8%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.55 0 0);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar: oklch(0.145 0 0);
+  --sidebar-foreground: oklch(0.96 0 0);
+  --sidebar-primary: oklch(0.93 0 0);
+  --sidebar-primary-foreground: oklch(0.185 0 0);
+  --sidebar-accent: oklch(0.245 0 0);
+  --sidebar-accent-foreground: oklch(0.96 0 0);
+  --sidebar-border: oklch(1 0 0 / 8%);
+  --sidebar-ring: oklch(0.55 0 0);
 }
 
 @layer base {
@@ -122,9 +192,24 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground text-sm;
   }
   html {
     @apply font-sans;
+  }
+  /* Scrollbars are chrome the interface did not ask for. Make them disappear. */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: calc(infinity * 1px);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--input);
   }
 }
