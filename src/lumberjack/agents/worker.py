@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.models import Model
 
 from lumberjack.agents.deps import WorkerDeps
 from lumberjack.agents.outputs import (
@@ -18,7 +19,7 @@ from lumberjack.agents.workspace import workspace_toolset
 __all__ = ["build_worker", "worker"]
 
 
-def build_worker(model: str | None = None) -> Agent[WorkerDeps, WorkerOutput]:
+def build_worker(model: str | Model | None = None) -> Agent[WorkerDeps, WorkerOutput]:
     agent = Agent[WorkerDeps, WorkerOutput](
         model,
         deps_type=WorkerDeps,

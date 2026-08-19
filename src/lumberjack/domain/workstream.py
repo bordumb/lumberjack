@@ -16,6 +16,7 @@ __all__ = [
     "ArbitrationMode",
     "Budget",
     "DriftStatus",
+    "PreservedWorktree",
     "Snapshot",
     "StandConfig",
     "Workstream",
@@ -91,6 +92,30 @@ class Workstream(BaseModel):
     active: bool = True
 
 
+class PreservedWorktree(BaseModel):
+    """A worktree that survived teardown, and why.
+
+    "Kept because it holds work that never landed" is the system working; "kept because
+    removing it failed" is a directory the operator now owns and probably has to clean
+    up by hand.  Reporting both as one list was how the second became invisible.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str
+    reason: Literal["unlanded", "halted", "cleanup_failed"]
+    detail: str = ""
+
+    def render(self) -> str:
+        match self.reason:
+            case "unlanded":
+                return f"{self.path} -- holds unlanded work"
+            case "halted":
+                return f"{self.path} -- the stand halted; nothing was removed"
+            case "cleanup_failed":
+                return f"{self.path} -- removal failed, delete by hand: {self.detail}"
+
+
 class ArbitrationMode(StrEnum):
     """Which :class:`ArbitrationPolicy` a stand runs."""
 
@@ -102,6 +127,14 @@ class ArbitrationMode(StrEnum):
 
 
 class Budget(BaseModel):
+    """The three limits a stand is not allowed to exceed.
+
+    All three are enforced.  ``max_steps_per_task`` caps the agent run itself,
+    ``max_wall_clock`` caps one task's elapsed time, and ``max_total_tokens`` is
+    stand-wide: on breach the stand halts cleanly, lets in-flight work finish and
+    preserves every worktree.
+    """
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     max_steps_per_task: int = Field(default=40, ge=1)
@@ -120,6 +153,11 @@ class StandConfig(BaseModel):
     arbitration: ArbitrationMode = ArbitrationMode.HYBRID
     model: str = "anthropic:claude-opus-5"
     foreman_model: str | None = None
+    fallback_models: tuple[str, ...] = ()
+    """Tried in order when the primary model's provider fails.
+
+    Empty by default, which keeps the model name unresolved until first use.  Set it and
+    provider overload degrades to the next model instead of blocking a task."""
     worker_runtime: Literal["pydantic_ai", "claude_code"] = "pydantic_ai"
     """``claude_code`` runs each workstream as a headless ``claude -p`` session, billed
     to a flat-rate plan rather than metered API tokens.  Requires the ``claude`` CLI."""
@@ -134,6 +172,11 @@ class StandConfig(BaseModel):
     auto_rebase_after: int = Field(default=3, ge=1)
     bounce_limit: int = Field(default=3, ge=1)
     oracle_debounce: timedelta = timedelta(seconds=3)
+    loop_failure_limit: int = Field(default=3, ge=1)
+    """Consecutive failures before a background loop stops instead of spinning.
+
+    A loop that raises every time it runs is not doing its job, and repeating it for the
+    length of a stand only hides that."""
     sensor_debounce: timedelta = timedelta(milliseconds=750)
     digest_token_cap: int = Field(default=1200, ge=200)
     digest_note_cap: int = Field(default=8, ge=0)

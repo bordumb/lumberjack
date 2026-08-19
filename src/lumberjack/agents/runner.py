@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from pydantic_ai import Agent
+from pydantic_ai.usage import UsageLimits
 
 from lumberjack.agents.deps import WorkerDeps
 from lumberjack.agents.outputs import WorkerOutput
@@ -35,5 +36,10 @@ class PydanticAiRunner:
                 task=spec,
                 worktree=workstream.worktree,
             ),
+            # `Budget.max_steps_per_task`, enforced where the steps actually happen.
+            # A runaway tool loop is stopped by the agent run itself rather than by an
+            # operator noticing the bill, and the supervisor turns the resulting
+            # `UsageLimitExceeded` into BlockReason.BUDGET_EXHAUSTED.
+            usage_limits=UsageLimits(request_limit=services.config.budget.max_steps_per_task),
         )
         return result.output

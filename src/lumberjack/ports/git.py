@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
+from lumberjack.domain.errors import LumberjackError, git_stderr_is_transient
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -32,14 +34,22 @@ if TYPE_CHECKING:
 __all__ = ["GitBackend", "GitError"]
 
 
-class GitError(RuntimeError):
-    """A git invocation failed in a way the caller cannot model."""
+class GitError(LumberjackError):
+    """A git invocation failed in a way the caller cannot model.
+
+    It classifies itself: lock contention between worktrees sharing one object store is
+    transient and worth retrying, and everything else is an answer.  Note that a merge
+    or rebase *conflict* never arrives here -- those come back as a
+    :class:`~lumberjack.domain.vcs.MergeOutcome`, which is why nothing downstream can
+    mistake one for a failure and retry it.
+    """
 
     def __init__(self, command: tuple[str, ...], code: int, stderr: str) -> None:
         super().__init__(f"git {' '.join(command)} failed ({code}): {stderr.strip()[:400]}")
         self.command = command
         self.code = code
         self.stderr = stderr
+        self.transient = git_stderr_is_transient(stderr)
 
 
 class GitBackend(Protocol):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pydantic_ai import Agent
+from pydantic_ai.models import Model
 
 from lumberjack.agents.deps import NegotiatorDeps
 from lumberjack.agents.outputs import NegotiationOutput
@@ -11,7 +12,7 @@ from lumberjack.agents.prompts import NEGOTIATOR
 __all__ = ["build_negotiator"]
 
 
-def build_negotiator(model: str | None = None) -> Agent[NegotiatorDeps, NegotiationOutput]:
+def build_negotiator(model: str | Model | None = None) -> Agent[NegotiatorDeps, NegotiationOutput]:
     return Agent[NegotiatorDeps, NegotiationOutput](
         model,
         deps_type=NegotiatorDeps,

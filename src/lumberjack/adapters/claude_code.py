@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import shutil
 import signal
@@ -27,6 +28,7 @@ from typing import Any
 
 from lumberjack.agents.outputs import TaskBlocked, TaskCompleted, WorkerOutput
 from lumberjack.core.services import Services
+from lumberjack.domain.errors import CoordinationUnavailableError
 from lumberjack.domain.events import NotePosted
 from lumberjack.domain.note import Note
 from lumberjack.domain.task import BlockReason, TaskSpec
@@ -40,6 +42,11 @@ __all__ = [
     "SessionResult",
     "render_brief",
 ]
+"""``CoordinationUnavailableError`` now lives in ``domain/errors.py`` -- an error is
+vocabulary before it is control flow -- and is re-exported here, where every caller and
+test already imports it from."""
+
+log = logging.getLogger(__name__)
 
 COORDINATION_TOOLS = "mcp__lumberjack"
 """Always allowed.  A session that cannot call these is not in the swarm."""
@@ -55,15 +62,6 @@ branch as finished, which is worse than reporting a red one."""
 _NESTING_VARS = ("CLAUDECODE", "CLAUDE_CODE_SSE_PORT", "CLAUDE_CODE_ENTRYPOINT")
 
 _DENIAL_MARKER = "requested permissions to use"
-
-
-class CoordinationUnavailableError(RuntimeError):
-    """The infrastructure a swarm depends on is missing or refusing.
-
-    Raised loudly and early.  A stand that runs without coordination still burns
-    tokens and still writes code -- it just writes it blind, and the harness reports
-    healthy progress the whole time.  That is worse than not starting.
-    """
 
 
 BRIEF = """\
@@ -267,7 +265,10 @@ class ClaudeCodeRunner:
         if not answered:
             detail = ""
             if process.stderr is not None:
-                with contextlib.suppress(Exception):
+                # Best-effort: we are already raising, and stderr from a process that
+                # has just been terminated may simply be gone. The message below still
+                # says what happened without it.
+                with contextlib.suppress(OSError, ValueError, asyncio.LimitOverrunError):
                     detail = (await process.stderr.read())[-600:].decode("utf-8", "replace")
             msg = (
                 "the lumberjack MCP server did not list its tools within "
@@ -287,6 +288,11 @@ class ClaudeCodeRunner:
             str(config),
             "--permission-mode",
             self.permission_mode,
+            # `Budget.max_steps_per_task`. The in-process worker enforces it through
+            # PydanticAI's usage limits; a headless session has its own turn counter,
+            # so the same number is handed to it here rather than left unenforced.
+            "--max-turns",
+            str(services.config.budget.max_steps_per_task),
             # `acceptEdits` covers file edits but still prompts for MCP tools, and a
             # headless session has nobody to prompt: every coordination call is denied
             # and the agent works blind while the harness assumes it is participating.
@@ -471,8 +477,12 @@ async def _terminate(process: asyncio.subprocess.Process, grace: float = 5.0) ->
             await asyncio.wait_for(process.wait(), timeout=grace)
     # A cancelled `communicate()` leaves the pipes open. Draining closes the transport,
     # but it is bounded: a grandchild still holding stdout must not stall a shutdown.
-    with contextlib.suppress(Exception):
+    # The process is already dead by here, so every one of these means "the pipes were
+    # closed for us", which is the outcome we wanted anyway.
+    try:
         await asyncio.wait_for(process.communicate(), timeout=1.0)
+    except (TimeoutError, OSError, ValueError, asyncio.LimitOverrunError) as error:
+        log.debug("draining %s after termination: %s", process.pid, error)
 
 
 def _signal_group(process: asyncio.subprocess.Process, sig: int) -> None:

@@ -16,17 +16,23 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
+import time
+import traceback
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 from pydantic_ai import Agent
+from pydantic_ai.exceptions import UsageLimitExceeded
 
 from lumberjack.adapters.claude_code import ClaudeCodeRunner
 from lumberjack.agents.deps import ForemanDeps, NegotiatorDeps, WorkerDeps
 from lumberjack.agents.foreman import build_arbiter, build_planner
+from lumberjack.agents.models import build_model
 from lumberjack.agents.negotiator import build_negotiator
 from lumberjack.agents.outputs import (
     ForemanRuling,
@@ -42,6 +48,7 @@ from lumberjack.agents.runner import PydanticAiRunner
 from lumberjack.agents.scout import Scout
 from lumberjack.agents.worker import build_worker
 from lumberjack.core.arbitration import policy_for
+from lumberjack.core.resilience import ArtifactStore, LoopGuard
 from lumberjack.core.sensor import WorktreeSensor
 from lumberjack.core.services import Services
 from lumberjack.core.tasks import record_transition
@@ -56,6 +63,7 @@ from lumberjack.domain.conflict import ConflictReport, Severity
 from lumberjack.domain.events import (
     ChannelClosed,
     ChannelOpened,
+    ComponentFailed,
     ContractFrozen,
     NegotiationTurn,
     StandHalted,
@@ -90,8 +98,11 @@ from lumberjack.ids import (
 from lumberjack.ports.arbitration import ArbitrationContext, ArbitrationPolicy
 from lumberjack.ports.git import GitError
 from lumberjack.ports.runner import WorkerRunner
+from lumberjack.ports.usage import UsageLedger
 
 __all__ = ["StandOutcome", "Supervisor", "WorkstreamOutcome"]
+
+log = logging.getLogger(__name__)
 
 FOREMAN_ID = AgentId("foreman")
 
@@ -139,6 +150,12 @@ class Supervisor:
     planner_agent: Agent[ForemanDeps, Plan] | None = None
     arbiter_agent: Agent[ForemanDeps, ForemanRuling] | None = None
     negotiator_agent: Agent[NegotiatorDeps, NegotiationOutput] | None = None
+    usage: UsageLedger | None = None
+    """Where ``Budget.max_total_tokens`` is measured.
+
+    0002 owns the counting and reaches here as ``services.usage``; injecting it
+    directly is what lets the enforcement be tested and land independently."""
+    artifacts: ArtifactStore | None = None
 
     stop: asyncio.Event = field(default_factory=asyncio.Event)
     sensors: dict[WorkstreamId, WorktreeSensor] = field(default_factory=dict)
@@ -146,6 +163,10 @@ class Supervisor:
     _running: dict[WorkstreamId, asyncio.Task[None]] = field(default_factory=dict)
     _background: list[asyncio.Task[None]] = field(default_factory=list)
     _arbitrating: set[str] = field(default_factory=set)
+    _attempted: set[TaskId] = field(default_factory=set)
+    """Tasks this process has already given a worker.  Empty in a fresh session."""
+    _elapsed: dict[WorkstreamId, float] = field(default_factory=dict)
+    """Monotonic start per workstream, for ``Budget.max_wall_clock``."""
     resumed_from: StandId | None = None
     model_overrides: dict[TaskId, str] = field(default_factory=dict)
     """Per-task model, when a run was configured agent by agent."""
@@ -155,8 +176,10 @@ class Supervisor:
 
     def __post_init__(self) -> None:
         config = self.services.config
-        model = config.model
-        foreman_model = config.foreman_model or model
+        # A provider that is overloaded should cost a task seconds, not the task, so
+        # every agent runs against the configured chain rather than one model.
+        model = build_model(config.model, config.fallback_models)
+        foreman_model = build_model(config.foreman_model or config.model, config.fallback_models)
         if self.policy is None:
             self.policy = policy_for(config.arbitration)
         if self.worker_agent is None:
@@ -169,6 +192,15 @@ class Supervisor:
             self.arbiter_agent = build_arbiter(foreman_model)
         if self.negotiator_agent is None:
             self.negotiator_agent = build_negotiator(model)
+        if self.usage is None:
+            # 0002 wires the concrete ledger onto Services; until then, and in tests,
+            # it is injected. `getattr` rather than an attribute so the two specs can
+            # land in either order without one of them inventing the other's field.
+            self.usage = getattr(self.services, "usage", None)
+        if self.artifacts is None:
+            self.artifacts = ArtifactStore(
+                root=config.resolved_state_root() / self.services.stand / "artifacts"
+            )
 
     def _runner_for(self, task: TaskId) -> WorkerRunner:
         """A runner bound to this task's model, when one was chosen for it."""
@@ -330,6 +362,11 @@ class Supervisor:
     async def _schedule(self, graph: TaskGraph, base: CommitSha) -> None:
         """Launch ready tasks up to ``max_parallel``, until everything is terminal."""
         while not self.stop.is_set():
+            if await self._over_token_budget():
+                self.stop.set()
+                await self._finish_in_flight()
+                await self.services.train.drain()
+                return
             # One pass, one rule: every ready task that is not finished and has no
             # worker in this process gets one. That covers a first launch, a task the
             # train bounced back, and a task a previous session left behind -- three
@@ -367,6 +404,7 @@ class Supervisor:
 
     async def _ensure_worker(self, spec: TaskSpec, base: CommitSha) -> None:
         """Give this task a worker, reusing the worktree it already has when it has one."""
+        self._attempted.add(spec.task_id)
         state = self.services.projections.tasks.get(spec.task_id)
         existing = getattr(state, "workstream", None)
         sensor = self.sensors.get(existing) if existing else None
@@ -395,6 +433,14 @@ class Supervisor:
             return True
         if isinstance(state, AwaitingIntegration):
             return True  # the train owns it; see _requeue_landings
+        if isinstance(state, Blocked):
+            # A task this process has already worked on and blocked stays blocked.
+            # Without this the scheduler hands it a fresh worker on every pass, it
+            # blocks again, and the stand spins for ever burning tokens on a task
+            # nothing has changed for -- with no limit and nothing in the log saying so.
+            # A task blocked by an *earlier* session is not in `_attempted`, so
+            # resuming a stand still picks it back up exactly once.
+            return task_id in self._attempted
         workstream = getattr(state, "workstream", None)
         return workstream in self._running
 
@@ -482,25 +528,113 @@ class Supervisor:
         try:
             assert self.runner is not None
             runner = self._runner_for(spec.task_id)
-            output = await runner.run(workstream, spec, services)
+            output = await asyncio.wait_for(
+                runner.run(workstream, spec, services),
+                timeout=self._wall_clock_left(workstream.workstream_id),
+            )
             await sensor.scan()
             await self._settle(workstream, spec, output)
+        except (TimeoutError, UsageLimitExceeded) as error:
+            # A task that ran out of time or out of steps is over budget, not broken.
+            # Saying so is the difference between "fix your agent" and "raise the limit".
+            await self._block(
+                workstream, spec, BlockReason.BUDGET_EXHAUSTED, _budget_detail(error, spec)
+            )
         except Exception as error:
-            current = services.projections.tasks.get(spec.task_id)
-            if isinstance(current, Running):
-                await record_transition(
-                    services.ledger,
-                    services.projections,
-                    current.block(BlockReason.AGENT_ERROR, str(error)[:500]),
-                    actor=workstream.agent,
-                    detail=str(error)[:500],
-                )
+            # One agent crashing must not stop the stand, so the task is blocked rather
+            # than the exception propagating. The traceback goes to an artifact: it is
+            # too big for the ledger and far too useful to discard, which is what
+            # `str(error)[:500]` alone used to do.
+            ref = self._capture(f"worker-{workstream.workstream_id}", error)
+            log.exception("worker %s failed on %s", workstream.agent, spec.task_id)
+            await self.services.ledger.append(
+                ComponentFailed(
+                    component="worker",
+                    error=f"{type(error).__name__}: {error}"[:500],
+                    giving_up=True,
+                    traceback_ref=ref,
+                    workstream=workstream.workstream_id,
+                ),
+                actor=workstream.agent,
+            )
+            detail = str(error)[:500] + (f" (traceback: {ref})" if ref else "")
+            await self._block(workstream, spec, BlockReason.AGENT_ERROR, detail)
         finally:
             sensor_stop.set()
             watcher.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await watcher
             await services.broker.release_all(workstream.workstream_id)
+
+    async def _block(
+        self, workstream: Workstream, spec: TaskSpec, reason: BlockReason, detail: str
+    ) -> None:
+        """Block this task and nothing else.  Its peers keep working and keep landing."""
+        current = self.services.projections.tasks.get(spec.task_id)
+        if not isinstance(current, Running):
+            return
+        await record_transition(
+            self.services.ledger,
+            self.services.projections,
+            current.block(reason, detail),
+            actor=workstream.agent,
+            detail=detail,
+        )
+
+    def _capture(self, name: str, error: BaseException) -> str | None:
+        if self.artifacts is None:
+            return None
+        return self.artifacts.write(name, "".join(traceback.format_exception(error)))
+
+    # -- budget ----------------------------------------------------------------------
+
+    def _wall_clock_left(self, workstream: WorkstreamId) -> float:
+        """Seconds this task has left of ``Budget.max_wall_clock``.
+
+        Measured on the monotonic clock, not the injected one. ``max_wall_clock`` is a
+        limit on how long a task may actually take -- the timeout it feeds is enforced by
+        the event loop in real seconds, and pairing that with a clock a test can freeze
+        or fast-forward gives an allowance that runs out for reasons nothing did.
+
+        The start is recorded once per workstream, so a task the train bounced back
+        continues its allowance rather than being handed a fresh one every attempt.
+        """
+        budget = self.services.config.budget.max_wall_clock.total_seconds()
+        started = self._elapsed.setdefault(workstream, time.monotonic())
+        return max(0.001, budget - (time.monotonic() - started))
+
+    async def _over_token_budget(self) -> bool:
+        """Whether the stand has spent its ``max_total_tokens``.
+
+        Halting is clean by design: the event is recorded, in-flight work is left to
+        finish, and every worktree survives. Killing agents mid-edit to save tokens
+        throws away the tokens already spent.
+        """
+        cap = self.services.config.budget.max_total_tokens
+        if cap is None or self.usage is None:
+            return False
+        spent = self.usage.totals().total_tokens
+        if spent < cap:
+            return False
+        reason = f"token budget exhausted: {spent} of {cap} tokens"
+        log.error("%s; halting cleanly and preserving every worktree", reason)
+        await self.services.ledger.append(
+            StandHalted(
+                reason=reason,
+                preserved=tuple(
+                    item.workstream_id
+                    for item in self.services.projections.active_workstreams()
+                ),
+            )
+        )
+        return True
+
+    async def _finish_in_flight(self) -> None:
+        """Let the workers that are already running reach their own end."""
+        if not self._running:
+            return
+        await asyncio.wait(tuple(self._running.values()))
+        self._running.clear()
 
     async def _settle(self, workstream: Workstream, spec: TaskSpec, report: WorkerReport) -> None:
         services = self.services
@@ -554,42 +688,66 @@ class Supervisor:
             remaining -= slice_size
         return not self.stop.is_set()
 
+    def _guard(self, component: str) -> LoopGuard:
+        """One loop's tolerance for failure.
+
+        Every background loop runs through one of these instead of a
+        ``suppress(Exception)``: a failure is logged, recorded as ``ComponentFailed``
+        and counted, and the loop stops once it has failed ``loop_failure_limit`` times
+        running. A stand that has quietly lost its oracle looks exactly like a healthy
+        one, and that is the most expensive lie this system can tell.
+        """
+        return LoopGuard(
+            component=component,
+            ledger=self.services.ledger,
+            limit=self.services.config.loop_failure_limit,
+            artifacts=self.artifacts,
+        )
+
+    async def _run_loop(
+        self, component: str, delay: timedelta, body: Callable[[], Awaitable[None]]
+    ) -> None:
+        guard = self._guard(component)
+        while not self.stop.is_set():
+            if not await self._nap(delay):
+                return
+            if not await guard.attempt(body):
+                log.error("the %s loop has stopped; this stand is degraded", component)
+                return
+
     async def _sync_loop(self) -> None:
         """Fold events written by anyone else -- external MCP agents, ``lj halt``.
 
         The projecting ledger folds our own writes, but a stand is a multi-process
         system: agents this harness did not spawn append to the same log.
         """
-        while not self.stop.is_set():
-            if not await self._nap(timedelta(seconds=1)):
-                return
-            with contextlib.suppress(Exception):
-                await self.services.projections.hydrate(self.services.ledger)
-            if self.services.projections.halted:
-                # `lj halt` reaches us as an event, not a call, so cancel the workers
-                # here. Relying on the event loop to collect them at teardown happens
-                # to work and is not something to depend on.
-                self._cancel_workers()
-                self.stop.set()
-                return
+        await self._run_loop("sync", timedelta(seconds=1), self._sync_once)
+
+    async def _sync_once(self) -> None:
+        await self.services.projections.hydrate(self.services.ledger)
+        if self.services.projections.halted:
+            # `lj halt` reaches us as an event, not a call, so cancel the workers
+            # here. Relying on the event loop to collect them at teardown happens
+            # to work and is not something to depend on.
+            self._cancel_workers()
+            self.stop.set()
 
     async def _oracle_loop(self) -> None:
-        while not self.stop.is_set():
-            if not await self._nap(self.services.config.oracle_debounce):
-                return
-            with contextlib.suppress(Exception):
-                await self.services.oracle.probe_all()
-                await self.services.broker.expire_due()
+        await self._run_loop("oracle", self.services.config.oracle_debounce, self._oracle_once)
+
+    async def _oracle_once(self) -> None:
+        await self.services.oracle.probe_all()
+        await self.services.broker.expire_due()
 
     async def _train_loop(self) -> None:
-        while not self.stop.is_set():
-            if not await self._nap(timedelta(seconds=2)):
-                return
-            with contextlib.suppress(Exception):
-                await self.services.train.run_once()
-                await self.services.train.rebase_drifted()
+        await self._run_loop("train", timedelta(seconds=2), self._train_once)
+
+    async def _train_once(self) -> None:
+        await self.services.train.run_once()
+        await self.services.train.rebase_drifted()
 
     async def _conflict_loop(self) -> None:
+        guard = self._guard("conflicts")
         while not self.stop.is_set():
             if not await self._nap(timedelta(seconds=1)):
                 return
@@ -599,8 +757,9 @@ class Supervisor:
                 if report.conflict_id in self._arbitrating:
                     continue
                 self._arbitrating.add(report.conflict_id)
-                with contextlib.suppress(Exception):
-                    await self._arbitrate(report)
+                if not await guard.attempt(lambda item=report: self._arbitrate(item)):
+                    log.error("the conflicts loop has stopped; this stand is degraded")
+                    return
 
     async def _arbitrate(self, report: ConflictReport) -> None:
         assert self.policy is not None
@@ -766,12 +925,21 @@ class Supervisor:
             blocked=blocked,
             conflicts_resolved=self._resolved,
             duration=duration,
+            # A halted stand preserves everything: it was interrupted, not finished,
+            # and which lane happened to land first is not a reason to delete it.
             preserved_worktrees=tuple(
                 str(workstream.worktree.path)
                 for workstream in projections.workstreams.values()
-                if workstream.task not in projections.landed
+                if projections.halted or workstream.task not in projections.landed
             ),
         )
+
+
+def _budget_detail(error: TimeoutError | UsageLimitExceeded, spec: TaskSpec) -> str:
+    """Say which limit was hit, so the operator knows which number to change."""
+    if isinstance(error, TimeoutError):
+        return f"{spec.task_id} exceeded Budget.max_wall_clock"
+    return f"{spec.task_id} exceeded Budget.max_steps_per_task: {error}"[:500]
 
 
 def _negotiation_prompt(report: ConflictReport, channel: Channel, speaker: AgentId) -> str:
