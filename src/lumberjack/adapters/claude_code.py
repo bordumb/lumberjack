@@ -134,6 +134,7 @@ class ClaudeCodeRunner:
     extra_allowed_tools: tuple[str, ...] = ()
     binary: str = field(default_factory=lambda: shutil.which("claude") or "claude")
     timeout_seconds: float = 3600.0
+    probe_timeout: float = 120.0
     extra_args: tuple[str, ...] = ()
     name: str = "claude_code"
 
@@ -203,18 +204,29 @@ class ClaudeCodeRunner:
             start_new_session=True,
         )
         try:
-            raw, err = await asyncio.wait_for(
-                process.communicate(f"{handshake}\n".encode()), timeout=90
+            if process.stdin is not None:
+                process.stdin.write(f"{handshake}\n".encode())
+                await process.stdin.drain()
+            answered = await asyncio.wait_for(
+                _read_until(process, needle='"tools"'), timeout=self.probe_timeout
             )
         except TimeoutError:
+            answered = False
+        finally:
+            # An MCP stdio server serves until its input closes, so this never exits on
+            # its own. Waiting for it to is how the check used to fail against a server
+            # that was answering perfectly well.
             await _terminate(process)
-            msg = "the lumberjack MCP server did not answer within 90s"
-            raise CoordinationUnavailableError(msg) from None
 
-        text = raw.decode("utf-8", "replace")
-        if '"tools"' not in text:
-            detail = (err.decode("utf-8", "replace") or text)[-600:]
-            msg = f"the lumberjack MCP server did not list its tools:\n{detail}"
+        if not answered:
+            detail = ""
+            if process.stderr is not None:
+                with contextlib.suppress(Exception):
+                    detail = (await process.stderr.read())[-600:].decode("utf-8", "replace")
+            msg = (
+                "the lumberjack MCP server did not list its tools within "
+                f"{self.probe_timeout:.0f}s" + (f":\n{detail}" if detail.strip() else "")
+            )
             raise CoordinationUnavailableError(msg)
 
     async def run(self, workstream: Workstream, spec: TaskSpec, services: Services) -> WorkerOutput:
@@ -370,6 +382,20 @@ class ClaudeCodeRunner:
             ),
             actor=workstream.agent,
         )
+
+
+async def _read_until(process: asyncio.subprocess.Process, *, needle: str) -> bool:
+    """Read stdout until the needle appears.  Returns False if the stream ends first."""
+    if process.stdout is None:
+        return False
+    seen = ""
+    while True:
+        chunk = await process.stdout.read(4096)
+        if not chunk:
+            return False
+        seen += chunk.decode("utf-8", "replace")
+        if needle in seen:
+            return True
 
 
 async def _terminate(process: asyncio.subprocess.Process, grace: float = 5.0) -> None:

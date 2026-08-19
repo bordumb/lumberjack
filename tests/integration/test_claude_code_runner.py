@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -390,3 +391,49 @@ async def test_the_nesting_guard_is_stripped(
     )
 
     assert Path(f"{script}.nested").read_text().strip() == ""
+
+
+async def test_preflight_accepts_a_server_that_stays_up(
+    services: Services, make_workstream, tmp_path: Path, monkeypatch
+) -> None:
+    """The regression that stopped a healthy stand from starting.
+
+    An MCP stdio server serves until its input closes, so it never exits on its own.
+    Waiting for it to exit -- rather than reading its reply -- timed out against a
+    server that was answering correctly.
+    """
+    script = fake_claude(tmp_path, body="echo ok")
+    ledger = services.config.resolved_state_root() / str(services.stand) / "ledger.db"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_bytes(b"")
+
+    server = tmp_path / "uv"
+    server.write_text(
+        "#!/bin/sh\n"
+        "cat > /dev/null &\n"
+        'printf \'{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}\\n\'\n'
+        "sleep 30\n"
+    )
+    server.chmod(server.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+
+    runner = ClaudeCodeRunner(repo=services.config.repo, binary=str(script), probe_timeout=20.0)
+    await runner.preflight(services)  # must not raise
+
+
+async def test_preflight_rejects_a_silent_server(
+    services: Services, make_workstream, tmp_path: Path, monkeypatch
+) -> None:
+    script = fake_claude(tmp_path, body="echo ok")
+    ledger = services.config.resolved_state_root() / str(services.stand) / "ledger.db"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_bytes(b"")
+
+    server = tmp_path / "uv"
+    server.write_text("#!/bin/sh\necho 'boom' >&2\nsleep 30\n")
+    server.chmod(server.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+
+    runner = ClaudeCodeRunner(repo=services.config.repo, binary=str(script), probe_timeout=3.0)
+    with pytest.raises(CoordinationUnavailableError, match="did not list its tools"):
+        await runner.preflight(services)
