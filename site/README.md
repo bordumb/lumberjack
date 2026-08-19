@@ -113,9 +113,11 @@ suggest, and the difference is the whole design:
 
 - **Pause** halts the stand. The supervisor cancels its workers, each session is
   signalled as a process group, and worktrees holding unlanded work are preserved.
-- **Continue** cannot resume a halted stand -- halting killed the sessions and the
-  supervisor exited, so there is nothing to un-pause. It starts a *new* run whose
-  worktrees begin on this one's branches, carrying its tasks forward: `lj run --resume`.
+- **Continue** gives this run another session: the same ledger, the same task ids and
+  the same branches. A run is a body of work, not one process lifetime, so pausing and
+  continuing leaves one thing to look at and one history to analyse rather than a chain
+  of forks to correlate. It also continues the way it began -- the runtime and models
+  come from the stand's own `StandStarted` event, not from `lumberjack.json`.
 - **Rename** adds a label. The log is append-only, so the goal the run was originally
   given stays in it; the name sits alongside.
 - **Delete** removes the ledger and the worktrees, and keeps the branches. A branch can

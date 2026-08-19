@@ -32,17 +32,18 @@ export async function POST(req: Request, ctx: { params: Promise<{ stand: string 
       }
 
       case "continue": {
-        // Not a resumption: halting killed the sessions and the supervisor exited.
-        // This starts a new stand whose worktrees begin on this one's branches.
+        // The same stand gets another session -- same ledger, same task ids, same
+        // branches. Forking a new run on every pause would make the unit of analysis
+        // the process rather than the work.
         //
         // The output goes to a file rather than /dev/null, and we wait a moment to
         // see whether it dies on the spot. A detached process whose failure nobody
         // reads is how "I clicked it and nothing happened" happens.
         const logs = path.join(repo, ".lumberjack", "logs");
         mkdirSync(logs, { recursive: true });
-        const log = path.join(logs, `continue-${stand}-${Date.now()}.log`);
+        const log = path.join(logs, `resume-${stand}-${Date.now()}.log`);
         const handle = openSync(log, "a");
-        const child = spawn("uv", [...base, "run", "--repo", repo, "--resume", stand], {
+        const child = spawn("uv", [...base, "resume", "--repo", repo, "--stand", stand], {
           cwd: repo,
           detached: true,
           stdio: ["ignore", handle, handle],

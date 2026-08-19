@@ -65,6 +65,7 @@ __all__ = [
     "ReviewCommentResolved",
     "StandHalted",
     "StandRenamed",
+    "StandResumed",
     "StandStarted",
     "TaskAssigned",
     "TaskPlanned",
@@ -99,6 +100,21 @@ class StandStarted(_Event):
     nothing is running is worse than no control.
     """
     resumed_from: StandId | None = None
+
+
+class StandResumed(_Event):
+    """A new supervisor session picked the stand back up.
+
+    A stand is a body of work, not one process lifetime. Pausing ends a session;
+    continuing starts another against the same ledger, the same task ids and the same
+    branches, so the run stays one thing to look at and to analyse.
+    """
+
+    kind: Literal["stand_resumed"] = "stand_resumed"
+    pid: int | None = None
+    session: int = 1
+    carried: tuple[TaskId, ...] = ()
+    """Tasks that were still outstanding when the session started."""
 
 
 class StandRenamed(_Event):
@@ -362,6 +378,7 @@ EventPayload = Annotated[
     StandStarted
     | StandHalted
     | StandRenamed
+    | StandResumed
     | TaskPlanned
     | TaskAssigned
     | TaskStateChanged

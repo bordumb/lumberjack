@@ -133,6 +133,17 @@ class GitCli:
         await self._run("worktree", "add", "--quiet", "-b", branch, str(at), base)
         return Worktree(path=at, branch=branch, base=base)
 
+    async def attach_worktree(self, branch: str, at: Path) -> Worktree:
+        """Continue an existing branch rather than starting a new one.
+
+        A resumed session picks up the same branch it left, so the work stays one
+        history instead of being copied onto a fresh name.
+        """
+        at.parent.mkdir(parents=True, exist_ok=True)
+        await self._run("worktree", "add", "--quiet", str(at), branch)
+        tip = await self.resolve(branch)
+        return Worktree(path=at, branch=branch, base=tip)
+
     async def remove_worktree(self, worktree: Worktree, *, force: bool = False) -> None:
         args = ["worktree", "remove", str(worktree.path)]
         if force:

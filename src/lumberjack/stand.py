@@ -89,6 +89,53 @@ class Stand:
         )
 
     @classmethod
+    async def attach(
+        cls,
+        stand_id: StandId,
+        config: StandConfig | None = None,
+        *,
+        git: GitBackend | None = None,
+        clock: Clock | None = None,
+    ) -> Stand:
+        """Open an existing stand for another session.
+
+        The configuration comes from the stand's own ``StandStarted`` event rather than
+        from the caller: a run continues the way it began, and rediscovering its runtime
+        from a config file is how a resumed run ends up on a different one.
+        """
+        the_clock = clock or SystemClock()
+        projections = Projections(stand=stand_id)
+        provisional = config or StandConfig()
+        inner = await SqliteLedger.open(
+            stand_id,
+            provisional.resolved_state_root() / stand_id / "ledger.db",
+            clock=the_clock,
+        )
+        ledger = ProjectingLedger(inner=inner, projections=projections)
+        await projections.hydrate(ledger)
+
+        recorded = projections.config or provisional
+        if config is not None:
+            recorded = recorded.model_copy(update={"repo": config.repo})
+
+        services = Services.wire(
+            stand=stand_id,
+            config=recorded,
+            clock=the_clock,
+            git=git or GitCli(repo=recorded.repo),
+            ledger=ledger,
+            indexer=AstIndexer(),
+            gate=CommandGate(commands=recorded.gate_commands),
+            projections=projections,
+        )
+        return cls(
+            stand_id=stand_id,
+            config=recorded,
+            services=services,
+            supervisor=Supervisor(services=services),
+        )
+
+    @classmethod
     @contextlib.asynccontextmanager
     async def open(
         cls,
@@ -124,6 +171,10 @@ class Stand:
 
     async def run(self, goal: str) -> StandOutcome:
         return await self.supervisor.run(goal)
+
+    async def resume(self) -> StandOutcome:
+        """Continue this stand in a new session."""
+        return await self.supervisor.resume()
 
     async def halt(self, reason: str = "operator halt") -> None:
         await self.supervisor.halt(reason)

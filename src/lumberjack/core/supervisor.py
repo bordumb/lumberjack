@@ -59,6 +59,7 @@ from lumberjack.domain.events import (
     ContractFrozen,
     NegotiationTurn,
     StandHalted,
+    StandResumed,
     StandStarted,
     TaskAssigned,
     TaskPlanned,
@@ -87,6 +88,7 @@ from lumberjack.ids import (
     new_workstream_id,
 )
 from lumberjack.ports.arbitration import ArbitrationContext, ArbitrationPolicy
+from lumberjack.ports.git import GitError
 from lumberjack.ports.runner import WorkerRunner
 
 __all__ = ["StandOutcome", "Supervisor", "WorkstreamOutcome"]
@@ -213,6 +215,44 @@ class Supervisor:
             git=services.git, indexer=services.indexer
         ).survey(base)
         return base
+
+    async def resume(self) -> StandOutcome:
+        """Pick a stand back up: same ledger, same tasks, same branches.
+
+        A stand is a body of work rather than one process lifetime, so continuing it
+        adds a session instead of forking a run. Task ids and branch names are
+        unchanged, which is what keeps the history of an attempt readable.
+        """
+        started = self.services.clock.now()
+        projections = self.services.projections
+        outstanding = projections.outstanding()
+        if not outstanding:
+            return self._outcome(projections.goal, timedelta(0))
+
+        await self.services.ledger.append(
+            StandResumed(
+                pid=os.getpid(),
+                session=projections.session + 1,
+                carried=outstanding,
+            )
+        )
+        assert self.runner is not None
+        await self.runner.preflight(self.services)
+
+        graph = TaskGraph(tasks=tuple(projections.specs[task] for task in outstanding))
+        base = projections.base or await self.services.git.resolve(self.services.config.base_ref)
+        self._background = [
+            asyncio.create_task(self._oracle_loop(), name="lj-oracle"),
+            asyncio.create_task(self._train_loop(), name="lj-train"),
+            asyncio.create_task(self._conflict_loop(), name="lj-conflicts"),
+            asyncio.create_task(self._sync_loop(), name="lj-sync"),
+        ]
+        try:
+            await self._schedule(graph, base)
+        finally:
+            await self._shutdown()
+            await self.services.train.drain()
+        return self._outcome(projections.title, self.services.clock.now() - started)
 
     async def plan(self, goal: str) -> TaskGraph:
         assert self.planner_agent is not None
@@ -355,16 +395,26 @@ class Supervisor:
             for spec in graph.tasks
         )
 
+    async def _branch_tip(self, branch: str) -> CommitSha | None:
+        try:
+            return await self.services.git.resolve(branch)
+        except GitError:
+            return None
+
     async def _launch(self, spec: TaskSpec, base: CommitSha) -> None:
         services = self.services
         workstream_id = new_workstream_id()
         agent_id = new_agent_id("agent")
         branch = services.config.workstream_branch(services.stand, spec.task_id)
         path = services.config.resolved_worktree_root() / workstream_id
-        # Resuming starts the worktree on the earlier stand's branch rather than the
-        # base, so the agent continues its own work instead of redoing it.
-        start = self.resume_bases.get(spec.task_id, base)
-        worktree: Worktree = await services.git.add_worktree(branch, start, path)
+        # A branch already exists when this task has been worked on before, in this
+        # stand or an earlier one. Continuing it keeps the work as one history.
+        existing = await self._branch_tip(branch)
+        if existing is not None:
+            worktree: Worktree = await services.git.attach_worktree(branch, path)
+        else:
+            start = self.resume_bases.get(spec.task_id, base)
+            worktree = await services.git.add_worktree(branch, start, path)
 
         workstream = Workstream(
             workstream_id=workstream_id,

@@ -539,6 +539,38 @@ def halt(*, repo: Path = Path(), stand: str | None = None, reason: str = "operat
 
 
 @app.command
+def resume(*, repo: Path = Path(), stand: str | None = None) -> None:
+    """Continue a paused run.
+
+    The same stand, the same task ids and the same branches -- a run is a body of work
+    rather than one process lifetime, so this adds a session instead of forking a run.
+    """
+
+    async def go() -> None:
+        target = StandId(stand) if stand else _latest_stand(repo)
+        if target is None:
+            print("no stands found")
+            raise SystemExit(3)
+        opened = await Stand.attach(target, _load_config(repo))
+        try:
+            outstanding = opened.services.projections.outstanding()
+            if not outstanding:
+                print(f"{target} has nothing outstanding; every task landed or was abandoned")
+                raise SystemExit(0)
+            print(f"resuming {target}: {', '.join(outstanding)}")
+            print(f"runtime: {opened.config.worker_runtime}")
+            outcome = await opened.resume()
+            print(outcome.summary())
+        except CoordinationUnavailableError as error:
+            print(f"\ncoordination is unavailable, so the stand did not resume:\n  {error}")
+            raise SystemExit(3) from error
+        finally:
+            await opened.close()
+
+    asyncio.run(go())
+
+
+@app.command
 def rename(name: str, *, repo: Path = Path(), stand: str | None = None) -> None:
     """Give a run a name.
 

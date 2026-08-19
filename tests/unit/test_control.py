@@ -83,3 +83,53 @@ def test_renaming_adds_a_label_without_losing_the_goal() -> None:
     assert projections.name == "nightly sweep"
     assert projections.title == "nightly sweep"
     assert projections.goal == "implement 0002, 0003, 0004"
+
+
+def test_resuming_clears_the_halt_and_counts_a_session() -> None:
+    """A stand is a body of work, not one process lifetime."""
+    from lumberjack.domain.events import StandResumed
+
+    spec = TaskSpec(task_id=TaskId("t1"), title="t", intent="i")
+    projections = fold(
+        TaskPlanned(spec=spec),
+        StandHalted(reason="operator"),
+        StandResumed(pid=1234, session=2, carried=(TaskId("t1"),)),
+    )
+
+    assert projections.halted is False
+    assert projections.session == 2
+    assert projections.pid == 1234
+    assert projections.lifecycle(alive=True) == "live"
+
+
+def test_outstanding_is_what_a_session_picks_up() -> None:
+    from lumberjack.domain.events import TaskStateChanged
+    from lumberjack.domain.task import Abandoned, Landed
+    from lumberjack.ids import AgentId, CommitSha, WorkstreamId
+
+    first = TaskSpec(task_id=TaskId("t1"), title="one", intent="i")
+    second = TaskSpec(task_id=TaskId("t2"), title="two", intent="i")
+    third = TaskSpec(task_id=TaskId("t3"), title="three", intent="i")
+    landed = Landed(
+        spec=first,
+        agent=AgentId("a"),
+        workstream=WorkstreamId("ws"),
+        tip=CommitSha("a" * 7),
+        merge=CommitSha("b" * 7),
+        landed_at=NOW,
+    )
+    projections = fold(
+        TaskPlanned(spec=first),
+        TaskPlanned(spec=second),
+        TaskPlanned(spec=third),
+        TaskStateChanged(task_id=first.task_id, frm="running", to="landed", state=landed),
+        TaskStateChanged(
+            task_id=third.task_id,
+            frm="pending",
+            to="abandoned",
+            state=Abandoned(spec=third, why="dropped"),
+        ),
+    )
+
+    # Landed work is done and abandoned work was dropped; only the rest is carried.
+    assert projections.outstanding() == ("t2",)

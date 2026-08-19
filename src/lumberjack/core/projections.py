@@ -47,6 +47,7 @@ from lumberjack.domain.events import (
     ReviewCommentResolved,
     StandHalted,
     StandRenamed,
+    StandResumed,
     StandStarted,
     TaskAssigned,
     TaskPlanned,
@@ -107,6 +108,8 @@ class Projections:
     """What a person calls this run. History is append-only, so renaming adds a label
     rather than rewriting the goal that was originally asked for."""
     pid: int | None = None
+    session: int = 1
+    """How many supervisor sessions this stand has had. A pause and a continue make two."""
     resumed_from: StandId | None = None
     config: StandConfig | None = None
     base: CommitSha | None = None
@@ -164,6 +167,10 @@ class Projections:
                 self.base = payload.base
                 self.integration_branch = payload.integration_branch
                 self.integration_head = payload.base
+            case StandResumed():
+                self.halted = False
+                self.pid = payload.pid
+                self.session = payload.session
             case StandRenamed():
                 self.name = payload.name
             case StandHalted():
@@ -407,6 +414,14 @@ class Projections:
         if self.finished():
             return "finished"
         return "live" if alive is not False else "stale"
+
+    def outstanding(self) -> tuple[TaskId, ...]:
+        """Tasks that have not landed and were not abandoned -- what a session picks up."""
+        return tuple(
+            task_id
+            for task_id, task in self.tasks.items()
+            if task.kind not in ("landed", "abandoned")
+        )
 
     def completed_tasks(self) -> frozenset[TaskId]:
         return frozenset(self.landed)

@@ -60,14 +60,13 @@ export function StandControls({ stand, repo, lifecycle, title, onChanged }: Prop
   };
 
   /**
-   * Continue starts a new run, so following it means waiting for that run to appear
-   * and going there. Reporting "started" and leaving the reader on the old run is how
-   * a working button still feels broken.
+   * Continuing happens in place: this stand gets another session, so there is nowhere
+   * to navigate to. The status clears once the run reports itself live again.
    */
   const carryOn = async () => {
     setBusy(true);
     setError(null);
-    setStatus("starting…");
+    setStatus("starting a new session…");
     try {
       await control(stand, { repo, action: "continue" });
     } catch (cause) {
@@ -76,24 +75,20 @@ export function StandControls({ stand, repo, lifecycle, title, onChanged }: Prop
       setBusy(false);
       return;
     }
-    setStatus("waiting for the new run…");
     for (let attempt = 0; attempt < 60; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
+      onChanged();
       const response = await fetch(`/api/stands${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`);
-      const data = (await response.json()) as { stands: { stand: string; resumedFrom?: string }[] };
-      const started = data.stands.find((item) => item.resumedFrom === stand);
-      if (started) {
-        router.push(
-          repo
-            ? `/?repo=${encodeURIComponent(repo)}&stand=${started.stand}`
-            : `/?stand=${started.stand}`,
-        );
+      const data = (await response.json()) as { stands: { stand: string; lifecycle: string }[] };
+      if (data.stands.find((item) => item.stand === stand)?.lifecycle === "live") {
+        setStatus(null);
+        setBusy(false);
         return;
       }
     }
     setStatus(null);
     setBusy(false);
-    setError("the new run did not appear; check .lumberjack/logs");
+    setError("the session did not come up; check .lumberjack/logs");
   };
 
   // Only a run that is actually running can be paused. A stale one has nothing to stop.
@@ -128,7 +123,7 @@ export function StandControls({ stand, repo, lifecycle, title, onChanged }: Prop
         <button
           type="button"
           disabled={busy}
-          title="starts a new run from this one's branches"
+          title="continue this run in a new session"
           onClick={() => void carryOn()}
           className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-2.5 py-1.5 text-[12px] font-medium text-white disabled:opacity-40"
         >
