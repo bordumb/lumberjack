@@ -163,6 +163,8 @@ class ClaudeCodeRunner:
             msg = "uv is not on PATH; the MCP server runs as `uv run lj serve`."
             raise CoordinationUnavailableError(msg)
 
+        await self._check_login()
+
         ledger = services.config.resolved_state_root() / str(services.stand) / "ledger.db"
         if not ledger.is_file():
             msg = (
@@ -171,6 +173,42 @@ class ClaudeCodeRunner:
             )
             raise CoordinationUnavailableError(msg)
         await self._probe_server(services)
+
+    async def _check_login(self) -> None:
+        """Ask the CLI to do the smallest possible thing.
+
+        Preflight checked that the binary existed, which it did -- and every session
+        then died on an expired OAuth token after three worktrees had been created. A
+        credential is infrastructure like any other, so it is checked before the work
+        starts rather than discovered by each agent separately.
+        """
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self.binary,
+                "-p",
+                "Reply with the single word: ok",
+                "--output-format",
+                "json",
+                cwd=str(self.repo.resolve()),
+                env=_child_env(),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            raw, err = await asyncio.wait_for(process.communicate(), timeout=self.probe_timeout)
+        except (OSError, ValueError, TimeoutError) as error:
+            msg = f"could not reach the claude CLI: {error}"
+            raise CoordinationUnavailableError(msg) from error
+
+        answer = _parse(raw.decode("utf-8", "replace"), fallback=err.decode("utf-8", "replace"))
+        if answer.ok:
+            return
+        remedy = (
+            " Run `claude login` and try again."
+            if "auth" in answer.text.lower() or "oauth" in answer.text.lower()
+            else ""
+        )
+        msg = f"the claude CLI could not run a request: {answer.text.strip()[:300]}{remedy}"
+        raise CoordinationUnavailableError(msg)
 
     async def _probe_server(self, services: Services) -> None:
         """Speak MCP to our own server before trusting sessions to it.
@@ -333,7 +371,16 @@ class ClaudeCodeRunner:
         out = raw_out.decode("utf-8", "replace")
         err = raw_err.decode("utf-8", "replace")
         if process.returncode:
-            return SessionResult(ok=False, text=(err or out)[-4000:])
+            # A failed run still answers in JSON, and that answer says why. Returning
+            # the raw stream instead put a page of escaped JSON on the blackboard where
+            # the sentence "OAuth session expired" was the only part that mattered.
+            parsed = _parse(out, fallback=err)
+            return SessionResult(
+                ok=False,
+                text=parsed.text or (err or out)[-4000:],
+                turns=parsed.turns,
+                raw=parsed.raw,
+            )
         return _parse(out, fallback=err)
 
     def _write_mcp_config(self, workstream: Workstream, services: Services) -> Path:

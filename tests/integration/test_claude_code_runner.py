@@ -443,3 +443,43 @@ async def test_preflight_rejects_a_silent_server(
     runner = ClaudeCodeRunner(repo=services.config.repo, binary=str(script), probe_timeout=3.0)
     with pytest.raises(CoordinationUnavailableError, match="did not list its tools"):
         await runner.preflight(services)
+
+
+async def test_preflight_rejects_an_expired_login(
+    services: Services, tmp_path: Path, monkeypatch
+) -> None:
+    """The failure that got past preflight and killed three sessions instead.
+
+    The binary existed, so the check passed; every session then died on an expired
+    OAuth token after the worktrees had been created.
+    """
+    payload = json.dumps(
+        {"is_error": True, "result": "Failed to authenticate: OAuth session expired"}
+    )
+    script = fake_claude(tmp_path, body=f"echo '{payload}'")
+    ledger = services.config.resolved_state_root() / str(services.stand) / "ledger.db"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_bytes(b"")
+
+    runner = ClaudeCodeRunner(repo=services.config.repo, binary=str(script))
+    with pytest.raises(CoordinationUnavailableError, match="claude login"):
+        await runner.preflight(services)
+
+
+async def test_a_failed_session_reports_its_reason_not_its_json(
+    services: Services, make_workstream, tmp_path: Path
+) -> None:
+    payload = json.dumps(
+        {"is_error": True, "result": "Failed to authenticate: OAuth session expired"}
+    )
+    script = fake_claude(tmp_path, body=f"echo '{payload}'; exit 1")
+    workstream = await make_workstream("a")
+    spec = services.projections.specs[workstream.task]
+
+    output = await ClaudeCodeRunner(repo=services.config.repo, binary=str(script)).run(
+        workstream, spec, services
+    )
+
+    assert isinstance(output, TaskBlocked)
+    assert output.needs.startswith("Failed to authenticate")
+    assert "is_error" not in output.needs
