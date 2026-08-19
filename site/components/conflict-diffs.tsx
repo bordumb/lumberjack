@@ -12,6 +12,8 @@ import type { ReviewComment } from "@/lib/types";
 type Anno = { comment?: ReviewComment; compose?: Target };
 import { TokenHoverCard, useTokenHover } from "@/components/token-hover";
 import type { SymbolInfo } from "@/components/token-hover";
+import { useTheme } from "@/components/theme-provider";
+import { CODE_THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 type Side = { id: string; agent: string; title: string; branch: string } | null;
@@ -42,9 +44,9 @@ type Payload = {
   files: ConflictFile[];
 };
 
-const BASE_OPTIONS = { diffStyle: "split", theme: "pierre-dark" } as const;
+const BASE_OPTIONS = { diffStyle: "split", theme: CODE_THEME } as const;
 const BASE_CONFLICT_OPTIONS = {
-  theme: "pierre-dark",
+  theme: CODE_THEME,
   mergeConflictActionsType: "default",
 } as const;
 
@@ -150,8 +152,10 @@ function FileConflict({
     },
   };
   const { hovered, onTokenEnter, onTokenLeave } = useTokenHover(file.symbols);
-  const diffOptions = { ...BASE_OPTIONS, onTokenEnter, onTokenLeave, ...selection };
-  const conflictOptions = { ...BASE_CONFLICT_OPTIONS, onTokenEnter, onTokenLeave, ...selection };
+  const { theme } = useTheme();
+  const themed = { themeType: theme, onTokenEnter, onTokenLeave, ...selection };
+  const diffOptions = { ...BASE_OPTIONS, ...themed };
+  const conflictOptions = { ...BASE_CONFLICT_OPTIONS, ...themed };
   const renderComment = (annotation: { metadata: Anno }) => {
     const { comment, compose } = annotation.metadata;
     if (compose) {

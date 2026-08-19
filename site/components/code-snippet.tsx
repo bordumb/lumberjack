@@ -8,6 +8,8 @@ import { cn } from "@/lib/utils";
 import { TokenHoverCard, useTokenHover } from "@/components/token-hover";
 import type { SymbolInfo } from "@/components/token-hover";
 import type { Anno } from "@/components/comments";
+import { useTheme } from "@/components/theme-provider";
+import { CODE_THEME } from "@/lib/theme";
 
 const COLLAPSE_OVER = 5;
 const COLLAPSED_HEIGHT = "9rem";
@@ -58,10 +60,12 @@ export function CodeSnippet({
     onSelectLines?.(range);
   };
   const { hovered, onTokenEnter, onTokenLeave } = useTokenHover(symbols ?? {});
+  const { theme } = useTheme();
 
   const name = nameFor(target, language);
   const options = {
-    theme: "pierre-dark",
+    theme: CODE_THEME,
+    themeType: theme,
     diffStyle: "split",
     onTokenEnter,
     onTokenLeave,
