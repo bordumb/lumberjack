@@ -47,13 +47,25 @@ export function latestStand(repo: string = DEFAULT_REPO): string | null {
  */
 const snapshots = new Map<string, { key: string; value: StandSnapshot | null }>();
 
+/**
+ * The cache key has to include the write-ahead log.
+ *
+ * SQLite in WAL mode appends to `<db>-wal` and leaves the database file untouched
+ * until a checkpoint, so keying on the database alone means the key never changes
+ * while a run is active -- and the dashboard freezes on whatever it read first. A live
+ * run looked stalled at one event for exactly this reason.
+ */
 function ledgerKey(file: string): string {
-  try {
-    const stat = statSync(file);
-    return `${stat.size}:${stat.mtimeMs}`;
-  } catch {
-    return "missing";
+  const parts: string[] = [];
+  for (const path of [file, `${file}-wal`]) {
+    try {
+      const stat = statSync(path);
+      parts.push(`${stat.size}:${stat.mtimeMs}`);
+    } catch {
+      parts.push("-");
+    }
   }
+  return parts.join("|");
 }
 
 function readEvents(stand: string, repo: string): Row[] {

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { resolveRepo } from "@/lib/repos";
 
@@ -75,12 +75,31 @@ export async function POST(req: Request) {
   const file = path.join(folder, `${Date.now()}.json`);
   writeFileSync(file, JSON.stringify(request, null, 2));
 
+  const logs = path.join(repo, ".lumberjack", "logs");
+  mkdirSync(logs, { recursive: true });
+  const log = path.join(logs, `run-${Date.now()}.log`);
+  const handle = openSync(log, "a");
   const child = spawn("uv", ["run", "lj", "run", "--repo", repo, "--request", file], {
     cwd: repo,
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", handle, handle],
   });
   child.unref();
 
-  return Response.json({ ok: true, request: file, agents: request.agents.length });
+  // Wait long enough to catch a run that dies on the spot -- a bad request, an expired
+  // login, a preflight refusal. Discarding this output is why a run that failed in
+  // three seconds looked like a run that was working.
+  const died = await new Promise<number | null>((resolve) => {
+    const timer = setTimeout(() => resolve(null), 4000);
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      resolve(code ?? 0);
+    });
+  });
+  if (died !== null && died !== 0) {
+    const detail = readFileSync(log, "utf8").trim().slice(-800);
+    return Response.json({ error: detail || `lj run exited ${died}`, log }, { status: 409 });
+  }
+
+  return Response.json({ ok: true, request: file, agents: request.agents.length, log });
 }
