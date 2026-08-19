@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { CodeSnippet } from "@/components/code-snippet";
@@ -10,7 +10,8 @@ import type { ReviewComment } from "@/lib/types";
 import type { SymbolInfo } from "@/components/token-hover";
 import { isCoordination, toolIcon } from "@/components/tool-icon";
 import { cn } from "@/lib/utils";
-import type { LogEntry, Workstream } from "@/lib/types";
+import type { LogEntry } from "@/lib/types";
+import type { TaskView } from "@/lib/weave";
 
 function time(at: number | null): string {
   return at ? new Date(at).toLocaleTimeString([], { hour12: false }) : "";
@@ -21,16 +22,16 @@ export function LogStream({ workstream, stand }: { workstream: string; stand: st
   const [symbols, setSymbols] = useState<Record<string, SymbolInfo>>({});
   const [pending, setPending] = useState<Target | null>(null);
   const { comments, post, resolve } = useComments(stand);
-  const [agent, setAgent] = useState<Workstream | null>(null);
+  const [task, setTask] = useState<TaskView | null>(null);
   const [follow, setFollow] = useState(true);
   const bottom = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const source = new EventSource(`/api/agents/${workstream}/log?stand=${stand}`);
     source.onmessage = (event) => {
-      const data = JSON.parse(event.data) as { entries: LogEntry[]; workstream: Workstream };
+      const data = JSON.parse(event.data) as { entries: LogEntry[]; task: TaskView };
       setEntries(data.entries);
-      setAgent(data.workstream);
+      setTask(data.task);
     };
     return () => source.close();
   }, [workstream, stand]);
@@ -52,9 +53,10 @@ export function LogStream({ workstream, stand }: { workstream: string; stand: st
         <span className="font-mono text-xs text-muted-foreground">
           {entries.length} entries
         </span>
-        {agent && (
+        {task && (
           <span className="font-mono text-xs text-muted-foreground">
-            · {agent.filesTouched} files touched
+            · {task.files.length} files · +{task.linesChanged} lines
+            {task.sessions > 1 ? ` · ${task.sessions} sessions` : ""}
           </span>
         )}
         <button
@@ -78,16 +80,28 @@ export function LogStream({ workstream, stand }: { workstream: string; stand: st
           </p>
         )}
         {entries.map((entry, index) => (
-          <Entry
-            key={entry.seq}
+          <Fragment key={entry.seq}>
+            {entry.session !== undefined &&
+              entry.session !== entries[index - 1]?.session && (
+                <div className="flex items-center gap-2 pt-4 pb-1">
+                  <span className="h-px flex-1 bg-border/60" />
+                  <span className="font-mono text-[10.5px] uppercase tracking-wider text-muted-foreground/70">
+                    session {entry.session}
+                    {entry.agent ? ` · ${entry.agent}` : ""}
+                  </span>
+                  <span className="h-px flex-1 bg-border/60" />
+                </div>
+              )}
+            <Entry
             entry={entry}
             symbols={symbols}
             answers={entries[index - 1]?.tool}
             comments={comments}
-            workstream={workstream}
+            workstream={task?.primary.id ?? workstream}
             onSelect={setPending}
             onResolve={resolve}
-          />
+            />
+          </Fragment>
         ))}
         <div ref={bottom} />
       </div>

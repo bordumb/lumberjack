@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { StandSnapshot } from "@/lib/types";
+import { weave } from "@/lib/weave";
 import { StandControls } from "@/components/stand-controls";
 
 const LIFECYCLE: Record<string, string> = {
@@ -51,6 +52,10 @@ export function Dashboard({ stand, repo }: { stand: string; repo?: string | null
     return <p className="p-8 text-sm text-muted-foreground">Connecting to the ledger…</p>;
   }
 
+  // Everything below reads tasks, never lanes. A task that has been worked on across
+  // sessions has several lanes, and reading one of them shows a fraction of the work.
+  const tasks = weave(data);
+
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-8">
       <header className="space-y-2">
@@ -85,16 +90,16 @@ export function Dashboard({ stand, repo }: { stand: string; repo?: string | null
       </header>
 
       <section className="grid gap-3 sm:grid-cols-4">
-        <Stat icon={Activity} label="workstreams" value={data.workstreams.length} />
+        <Stat icon={Activity} label="tasks" value={tasks.length} />
         <Stat
           icon={FileDiff}
           label="files touched"
-          value={data.workstreams.reduce((total, w) => total + w.filesTouched, 0)}
+          value={new Set(tasks.flatMap((task) => task.files)).size}
         />
         <Stat
           icon={Lock}
           label="leases held"
-          value={data.workstreams.reduce((total, w) => total + w.leases.length, 0)}
+          value={tasks.reduce((total, task) => total + task.leases.length, 0)}
         />
         <Stat
           icon={AlertTriangle}
@@ -105,47 +110,61 @@ export function Dashboard({ stand, repo }: { stand: string; repo?: string | null
       </section>
 
       <section className="space-y-2">
-        {data.workstreams.map((agent) => (
-          <Link key={agent.id} href={`/agents/${agent.id}?stand=${data.stand}`} className="block">
+        {tasks.map((task) => (
+          <Link
+            key={task.task}
+            href={`/agents/${task.primary.id}?stand=${data.stand}`}
+            className="block"
+          >
             <Card className="gap-0 border-border/60 p-4 transition-colors hover:border-primary/40 hover:bg-card/80">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className={cn("font-sans text-sm font-medium tracking-[-0.01em]", STATE[agent.state] ?? "")}>
-                  {agent.title}
+                <span
+                  className={cn(
+                    "font-sans text-sm font-medium tracking-[-0.01em]",
+                    STATE[task.state] ?? "",
+                  )}
+                >
+                  {task.title}
                 </span>
                 <Badge variant="outline" className="h-5 font-mono text-[10px]">
-                  {agent.state}
+                  {task.state}
                 </Badge>
-                {agent.violations > 0 && (
+                {task.sessions > 1 && (
+                  <Badge variant="secondary" className="h-5 font-mono text-[10px]">
+                    {task.sessions} sessions
+                  </Badge>
+                )}
+                {task.violations > 0 && (
                   <span className="flex items-center gap-1 text-[11px] text-amber-400">
                     <ShieldAlert className="h-3 w-3" />
-                    {agent.violations}
+                    {task.violations}
                   </span>
                 )}
-                <span className="ml-auto font-mono text-[11px] text-muted-foreground">
-                  {agent.agent}
+                <span className="ml-auto truncate font-mono text-[11px] text-muted-foreground">
+                  {task.agents.join(" · ")}
                 </span>
               </div>
 
               <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] text-muted-foreground">
                 <span className="flex items-center gap-1">
                   <FileDiff className="h-3 w-3" />
-                  {agent.filesTouched} files
+                  {task.files.length} files
                 </span>
-                <span>+{agent.linesChanged} lines</span>
+                <span>+{task.linesChanged} lines</span>
                 <span className="flex items-center gap-1">
                   <Lock className="h-3 w-3" />
-                  {agent.leases.length} leases
+                  {task.leases.length} leases
                 </span>
-                <span>{agent.claims} claims</span>
+                <span>{task.claims} claims</span>
                 <span className="flex items-center gap-1">
                   <Timer className="h-3 w-3" />
-                  {elapsed(agent.lastActivity)} since activity
+                  {elapsed(task.lastActivity)} since activity
                 </span>
               </div>
 
-              {agent.leases.length > 0 && (
+              {task.files.length > 0 && (
                 <p className="mt-2 truncate font-mono text-[11px] text-muted-foreground/70">
-                  {agent.leases.map((lease) => `${lease.scope} [${lease.mode}]`).join("  ·  ")}
+                  {task.files.slice(0, 8).join(" · ")}
                 </p>
               )}
             </Card>

@@ -9,6 +9,7 @@ export type Workstream = {
   worktree: string;
   state: string;
   filesTouched: number;
+  touched: string[];
   linesChanged: number;
   claims: number;
   leases: { mode: string; scope: string }[];
@@ -80,6 +81,9 @@ export type StandSnapshot = {
 
 export type LogEntry = {
   seq: number;
+  session?: number;
+  lane?: string;
+  agent?: string;
   role: "assistant" | "user" | "system" | "result";
   at: number | null;
   text?: string;

@@ -52,6 +52,25 @@ and the supervisor holds the overrides, so the same task can be reassigned.
 The process is detached: a stand outlives the request that started it, and progress is
 read from the ledger like everything else.
 
+## Tasks, not lanes
+
+A workstream is how a task was worked on during one session. A task is the thing itself.
+Pausing and continuing a run gives a task a second workstream, and every signal in the
+system -- deltas, leases, claims, conflicts, review comments, the session transcript --
+is keyed on the workstream. Read one and a task that has changed 29 files reports 7.
+
+`lib/weave.ts` is the single place they are combined, and every surface reads the
+`TaskView` it produces rather than a workstream:
+
+- **files** are a set, because two sessions editing the same file touched one file;
+- **lines** are a sum, because the sessions ran one after another on one branch;
+- **conflicts and comments** are gathered from every lane the task ever had;
+- **the transcript** is every session's log merged in order, with the seams shown rather
+  than smoothed over.
+
+Anything keyed on a lane that is not woven here will quietly show a fraction of the
+truth. That is the failure the type exists to make hard.
+
 ## How it reads the world
 
 Two sources, no daemon and no writes:

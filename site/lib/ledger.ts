@@ -169,6 +169,7 @@ function fold(stand: string, repo: string): StandSnapshot | null {
           worktree: w.worktree.path,
           state: "assigned",
           filesTouched: 0,
+          touched: [],
           linesChanged: 0,
           claims: 0,
           leases: [],
@@ -212,6 +213,7 @@ function fold(stand: string, repo: string): StandSnapshot | null {
         const w = workstreams.get(p.workstream);
         if (w) {
           w.filesTouched = p.paths.length;
+          w.touched = p.paths;
           w.linesChanged = p.lines_changed ?? 0;
           w.lastActivity = at;
         }
@@ -297,13 +299,6 @@ function fold(stand: string, repo: string): StandSnapshot | null {
     const w = workstreams.get(lease.workstream);
     if (w) w.leases.push({ mode: lease.mode, scope: lease.scope });
   }
-  const live = new Set(
-    [...workstreams.values()].filter((item) => item.active).map((item) => item.id),
-  );
-  for (const [id, conflict] of [...conflicts]) {
-    // A conflict between lanes that no longer exist is history, not a live problem.
-    if (!conflict.between.every((item) => live.has(item))) conflicts.delete(id);
-  }
   for (const conflict of conflicts.values()) {
     for (const id of conflict.between) {
       const w = workstreams.get(id);
@@ -318,8 +313,10 @@ function fold(stand: string, repo: string): StandSnapshot | null {
     comment.status = statusOf(comment, workstreams, awarenessAt);
   }
 
-  // Superseded lanes stay in the ledger but are not what the run is doing now.
-  const list = [...workstreams.values()].filter((item) => item.active);
+  // Every lane stays, superseded or not. What a task did is the union of the lanes
+  // that served it, so dropping the old ones here would lose the history that
+  // `weave` exists to put back together.
+  const list = [...workstreams.values()];
   // "live" has to mean a supervisor is actually running. A crashed stand is
   // un-halted with work outstanding, which is indistinguishable from a working one
   // unless liveness is checked rather than assumed.
