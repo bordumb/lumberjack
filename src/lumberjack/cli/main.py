@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import cyclopts
 
@@ -21,6 +21,7 @@ from lumberjack.adapters.sqlite_ledger import SqliteLedger
 from lumberjack.agents.outputs import Plan
 from lumberjack.core.projections import Projections
 from lumberjack.domain.events import StandHalted
+from lumberjack.domain.request import MODELS, RunRequest
 from lumberjack.domain.task import TaskSpec
 from lumberjack.domain.workstream import ArbitrationMode, StandConfig
 from lumberjack.ids import (
@@ -173,6 +174,13 @@ def run(
             name=["--resume"], help="Continue each task from an earlier stand's branch."
         ),
     ] = None,
+    request: Annotated[
+        Path | None,
+        cyclopts.Parameter(
+            name=["--request"],
+            help="A RunRequest JSON document describing the agents and their models.",
+        ),
+    ] = None,
 ) -> None:
     """Plan and execute: N agents, N worktrees, one integration branch.
 
@@ -189,13 +197,21 @@ def run(
         if runtime is not None:
             config = config.model_copy(update={"worker_runtime": runtime})
 
-        plan = _plan_from_specs(repo, spec) if spec else None
+        run_request = RunRequest.model_validate_json(request.read_text()) if request else None
+        plan = (
+            cast("Plan", run_request.plan())
+            if run_request
+            else (_plan_from_specs(repo, spec) if spec else None)
+        )
+        if run_request is not None:
+            config = config.model_copy(update={"worker_runtime": run_request.runtime})
         if plan is not None and n is None:
             config = config.model_copy(update={"max_parallel": len(plan.tasks)})
-        if goal is None and plan is None:
+        goal_text = goal or (run_request.name if run_request else None)
+        if goal_text is None and plan is None:
             print("give a goal, or one --spec per specification file")
             return
-        description = goal or "implement " + ", ".join(
+        description = goal_text or "implement " + ", ".join(
             item.title for item in (plan.tasks if plan else ())
         )
 
@@ -211,6 +227,8 @@ def run(
                 stand.supervisor.resume_bases.update(found)
                 for task_id, commit in found.items():
                     print(f"resuming {task_id} from {commit[:8]}")
+            if run_request is not None:
+                stand.supervisor.model_overrides.update(run_request.models())
             print(f"stand {stand.stand_id} on {config.repo}")
             print(f"runtime: {config.worker_runtime}, up to {config.max_parallel} parallel")
             try:
@@ -356,6 +374,19 @@ def comments(
             print(f"  {item.comment_id}  [{state}]  {item.render()}")
 
     asyncio.run(go())
+
+
+@app.command
+def models(*, as_json: bool = False) -> None:
+    """List the providers and models a run can be configured with."""
+    if as_json:
+        print(json.dumps([item.model_dump(mode="json") for item in MODELS]))
+        return
+    for item in MODELS:
+        mark = " (default)" if item.default else ""
+        print(f"  {item.provider.value}:{item.id:<28} {item.label}{mark}")
+        if item.note:
+            print(f"      {item.note}")
 
 
 @app.command

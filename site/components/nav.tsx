@@ -12,6 +12,7 @@ import {
   Plus,
 } from "lucide-react";
 import { AddRepo } from "@/components/add-repo";
+import { NewRun } from "@/components/new-run";
 import { cn } from "@/lib/utils";
 
 type Repo = { path: string; name: string; addedAt: number };
@@ -43,6 +44,7 @@ export function Nav() {
   const [stands, setStands] = useState<Record<string, StandEntry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
+  const [newRunFor, setNewRunFor] = useState<Repo | null>(null);
 
   useEffect(() => {
     setCollapsed(localStorage.getItem(COLLAPSED_KEY) === "1");
@@ -188,7 +190,7 @@ export function Nav() {
                 <Link
                   href={repoHref(repo)}
                   className={cn(
-                    "flex flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-[13px] transition-colors hover:bg-muted/50",
+                    "group flex flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-[13px] transition-colors hover:bg-muted/50",
                     current && !activeStand && pathname === "/"
                       ? "bg-primary/10 text-primary"
                       : "text-foreground/90",
@@ -197,6 +199,15 @@ export function Nav() {
                   <FolderGit2 className="h-3.5 w-3.5 shrink-0" />
                   <span className="truncate">{repo.name}</span>
                 </Link>
+                <button
+                  type="button"
+                  title={`new run in ${repo.name}`}
+                  aria-label={`new run in ${repo.name}`}
+                  onClick={() => setNewRunFor(repo)}
+                  className="rounded p-1 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
               </div>
 
               {isOpen && (
@@ -244,6 +255,17 @@ export function Nav() {
       </footer>
 
       {adding && <AddRepo onClose={() => setAdding(false)} onAdded={() => void loadRepos()} />}
+      {newRunFor && (
+        <NewRun
+          repo={newRunFor.path}
+          repoName={newRunFor.name}
+          onClose={() => setNewRunFor(null)}
+          onStarted={() => {
+            setExpanded((current) => new Set(current).add(newRunFor.path));
+            void loadStands(newRunFor.path);
+          }}
+        />
+      )}
     </nav>
   );
 }

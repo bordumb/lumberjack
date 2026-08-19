@@ -29,6 +29,29 @@ Registered repositories live in `~/.lumberjack/repos.json`. That file is the onl
 state in the dashboard, and deliberately so: it holds paths a person chose, which is the
 one thing here that cannot be recomputed from git or from a ledger.
 
+## Starting a run
+
+The `+` beside a repository in the nav opens a run composer: name the run, add an agent
+per worktree, and give each one either a prompt or a spec to follow. Each agent picks its
+own provider and model, because a run is often one strong agent and two cheap ones.
+
+What crosses to the CLI is a validated document, not a command line:
+
+```
+RunRequest { name, runtime, agents: [ { task: TaskSpec, provider, model } ] }
+```
+
+Written to `<repo>/.lumberjack/requests/`, then handed to `lj run --request`. Assembling
+argv in the browser would put the shape of a run in two places, and the browser's copy
+would be the one without validation. The model list comes from `lj models --as-json` for
+the same reason: a picker offering a model the runner rejects is a trap.
+
+Which model runs a task is an assignment, not part of the task -- `TaskSpec` stays clean
+and the supervisor holds the overrides, so the same task can be reassigned.
+
+The process is detached: a stand outlives the request that started it, and progress is
+read from the ledger like everything else.
+
 ## How it reads the world
 
 Two sources, no daemon and no writes:

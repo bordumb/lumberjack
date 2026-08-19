@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -142,6 +142,8 @@ class Supervisor:
     _running: dict[WorkstreamId, asyncio.Task[None]] = field(default_factory=dict)
     _background: list[asyncio.Task[None]] = field(default_factory=list)
     _arbitrating: set[str] = field(default_factory=set)
+    model_overrides: dict[TaskId, str] = field(default_factory=dict)
+    """Per-task model, when a run was configured agent by agent."""
     resume_bases: dict[TaskId, CommitSha] = field(default_factory=dict)
     """Per-task starting commits, so a workstream can pick up an earlier stand's branch."""
     _resolved: int = 0
@@ -162,6 +164,17 @@ class Supervisor:
             self.arbiter_agent = build_arbiter(foreman_model)
         if self.negotiator_agent is None:
             self.negotiator_agent = build_negotiator(model)
+
+    def _runner_for(self, task: TaskId) -> WorkerRunner:
+        """A runner bound to this task's model, when one was chosen for it."""
+        assert self.runner is not None
+        chosen = self.model_overrides.get(task)
+        if chosen is None:
+            return self.runner
+        if isinstance(self.runner, ClaudeCodeRunner):
+            # The claude CLI takes a bare model name, not a provider-qualified one.
+            return replace(self.runner, model=chosen.split(":", 1)[-1])
+        return PydanticAiRunner(agent=build_worker(chosen))
 
     def _default_runner(self) -> WorkerRunner:
         config = self.services.config
@@ -404,7 +417,8 @@ class Supervisor:
         )
         try:
             assert self.runner is not None
-            output = await self.runner.run(workstream, spec, services)
+            runner = self._runner_for(spec.task_id)
+            output = await runner.run(workstream, spec, services)
             await sensor.scan()
             await self._settle(workstream, spec, output)
         except Exception as error:
