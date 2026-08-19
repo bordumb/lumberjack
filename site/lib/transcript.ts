@@ -45,6 +45,9 @@ function describe(name: string, input: Record<string, unknown>, worktree: string
     case "MultiEdit":
       return {
         label: "Edit", target: file,
+        // Both sides, so the log can show what actually changed rather than the
+        // replacement in isolation.
+        before: typeof input.old_string === "string" ? input.old_string : null,
         body: typeof input.new_string === "string" ? input.new_string : null,
         language: languageOf(file),
       };
@@ -82,6 +85,20 @@ function describe(name: string, input: Record<string, unknown>, worktree: string
       return { label: name, target: short(input, 80), body: null, language: "text" };
     }
   }
+}
+
+const NUMBERED_LINE = /^\s{0,6}\d+(?:\t|→|\s\s)/;
+
+/**
+ * The Read tool prints its own line-number gutter. Rendering that inside a component
+ * that draws one produces two columns of numbers, so take ours off.
+ */
+function stripLineNumbers(text: string): string {
+  const lines = text.split("\n");
+  const numbered = lines.filter((line) => line.trim()).filter((line) => NUMBERED_LINE.test(line));
+  const meaningful = lines.filter((line) => line.trim()).length;
+  if (meaningful === 0 || numbered.length / meaningful < 0.8) return text;
+  return lines.map((line) => line.replace(/^\s{0,6}\d+(\t|→|\s\s)/, "")).join("\n");
 }
 
 function resultText(content: unknown): string {
@@ -132,7 +149,7 @@ export function parseTranscript(file: string, worktree: string, limit = 400): Lo
           tool: { name: block.name, ...described },
         });
       } else if (block.type === "tool_result") {
-        const text = resultText(block.content);
+        const text = stripLineNumbers(resultText(block.content));
         entries.push({
           seq: seq++, role: "user", at,
           result: {

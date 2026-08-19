@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { CodeBlock } from "@/components/code-block";
+import { CodeSnippet } from "@/components/code-snippet";
+import type { SymbolInfo } from "@/components/token-hover";
 import { isCoordination, toolIcon } from "@/components/tool-icon";
 import { cn } from "@/lib/utils";
 import type { LogEntry, Workstream } from "@/lib/types";
@@ -14,6 +15,7 @@ function time(at: number | null): string {
 
 export function LogStream({ workstream, stand }: { workstream: string; stand: string }) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [symbols, setSymbols] = useState<Record<string, SymbolInfo>>({});
   const [agent, setAgent] = useState<Workstream | null>(null);
   const [follow, setFollow] = useState(true);
   const bottom = useRef<HTMLDivElement>(null);
@@ -27,6 +29,13 @@ export function LogStream({ workstream, stand }: { workstream: string; stand: st
     };
     return () => source.close();
   }, [workstream, stand]);
+
+  useEffect(() => {
+    fetch(`/api/symbols?stand=${stand}`)
+      .then((response) => response.json() as Promise<Record<string, SymbolInfo>>)
+      .then(setSymbols)
+      .catch(() => setSymbols({}));
+  }, [stand]);
 
   useEffect(() => {
     if (follow) bottom.current?.scrollIntoView({ behavior: "smooth" });
@@ -63,8 +72,13 @@ export function LogStream({ workstream, stand }: { workstream: string; stand: st
             No transcript yet. The session writes its log as it works.
           </p>
         )}
-        {entries.map((entry) => (
-          <Entry key={entry.seq} entry={entry} />
+        {entries.map((entry, index) => (
+          <Entry
+            key={entry.seq}
+            entry={entry}
+            symbols={symbols}
+            answers={entries[index - 1]?.tool}
+          />
         ))}
         <div ref={bottom} />
       </div>
@@ -72,7 +86,15 @@ export function LogStream({ workstream, stand }: { workstream: string; stand: st
   );
 }
 
-function Entry({ entry }: { entry: LogEntry }) {
+function Entry({
+  entry,
+  symbols,
+  answers,
+}: {
+  entry: LogEntry;
+  symbols: Record<string, SymbolInfo>;
+  answers?: LogEntry["tool"];
+}) {
   if (entry.tool) {
     const Icon = toolIcon(entry.tool.label);
     const coordination = isCoordination(entry.tool.label);
@@ -94,7 +116,15 @@ function Entry({ entry }: { entry: LogEntry }) {
             {time(entry.at)}
           </span>
         </div>
-        {entry.tool.body && <CodeBlock code={entry.tool.body} language={entry.tool.language} />}
+        {entry.tool.body && (
+          <CodeSnippet
+            code={entry.tool.body}
+            before={entry.tool.before}
+            language={entry.tool.language}
+            target={entry.tool.target}
+            symbols={symbols}
+          />
+        )}
       </div>
     );
   }
@@ -113,7 +143,12 @@ function Entry({ entry }: { entry: LogEntry }) {
           <span>{ok ? "result" : "error"}</span>
           <span className="opacity-60">· {lines} lines</span>
         </div>
-        <CodeBlock code={preview} language="text" />
+        <CodeSnippet
+          code={preview}
+          language={answers?.language ?? "text"}
+          target={answers?.target ?? ""}
+          symbols={symbols}
+        />
       </div>
     );
   }

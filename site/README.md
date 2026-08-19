@@ -35,9 +35,16 @@ does not.
 
 **`/agents/<workstream>`** — the session transcript, rendered. Tool calls carry an icon and
 the file or command they act on; coordination calls (`claim`, `awareness`, `check_merge`,
-`request_land`) are tinted so they stand out from ordinary file work. Any code block over
-five lines collapses by default — a transcript is mostly file contents, and rendering all
-of it turns a log into a haystack.
+`request_land`) are tinted so they stand out from ordinary file work.
+
+Every snippet goes through `@pierre/diffs`, so the log is syntax-highlighted rather than
+grey text. An `Edit` shows as a real split diff, because the replacement text alone does
+not tell you what changed. Tool results are highlighted in the language of the call they
+answer — a `Read` of a `.py` file reads as Python — and the Read tool's own line-number
+gutter is stripped first so it does not collide with the one the renderer draws. Anything
+over five lines collapses by default, since a transcript is mostly file contents.
+
+Token hover works here too, from the same repo-wide index the conflict pages use.
 
 **`/conflicts/<id>`** — one page per raised conflict, rendered with
 [`@pierre/diffs`](https://diffs.com/docs). Each contested file collapses independently:

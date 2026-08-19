@@ -52,6 +52,7 @@ export type LogEntry = {
     label: string;
     target: string;
     body: string | null;
+    before?: string | null;
     language: string;
   };
   result?: { ok: boolean; preview: string; lines: number };

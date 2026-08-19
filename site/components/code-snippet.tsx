@@ -1,0 +1,102 @@
+"use client";
+
+import { useState } from "react";
+import { File, MultiFileDiff } from "@pierre/diffs/react";
+import { ChevronRight } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { TokenHoverCard, useTokenHover } from "@/components/token-hover";
+import type { SymbolInfo } from "@/components/token-hover";
+
+const COLLAPSE_OVER = 5;
+const COLLAPSED_HEIGHT = "9rem";
+
+const EXTENSION: Record<string, string> = {
+  python: "py", typescript: "ts", tsx: "tsx", javascript: "js", jsx: "jsx",
+  json: "json", markdown: "md", toml: "toml", yaml: "yml", bash: "sh",
+  css: "css", html: "html", sql: "sql", rust: "rs", go: "go", text: "txt",
+};
+
+/** `@pierre/diffs` picks its grammar from the file name, so give it a plausible one. */
+function nameFor(target: string, language: string): string {
+  if (target && /\.[A-Za-z0-9]+$/.test(target)) return target;
+  return `snippet.${EXTENSION[language] ?? "txt"}`;
+}
+
+export function CodeSnippet({
+  code,
+  before,
+  language = "text",
+  target = "",
+  symbols,
+}: {
+  code: string;
+  before?: string | null;
+  language?: string;
+  target?: string;
+  symbols?: Record<string, SymbolInfo>;
+}) {
+  const contents = code.replace(/\s+$/, "");
+  const lines = contents.split("\n").length + (before ? before.split("\n").length : 0);
+  const long = lines > COLLAPSE_OVER;
+  const [open, setOpen] = useState(!long);
+  const { hovered, onTokenEnter, onTokenLeave } = useTokenHover(symbols ?? {});
+
+  const name = nameFor(target, language);
+  const options = {
+    theme: "pierre-dark",
+    diffStyle: "split",
+    onTokenEnter,
+    onTokenLeave,
+  } as const;
+
+  // The surrounding row already names the file and the tool. A second header inside
+  // the snippet repeats it and costs a line of vertical space every time.
+  const noHeader = () => null;
+
+  return (
+    <div className="mt-2 overflow-hidden rounded-md border border-border/60">
+      <TokenHoverCard hovered={hovered} />
+      {long && (
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="flex w-full items-center gap-1.5 border-b border-border/60 bg-muted/30 px-2.5 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+        >
+          <ChevronRight className={cn("h-3 w-3 transition-transform", open && "rotate-90")} />
+          <span className="font-mono">{before ? "diff" : language}</span>
+          <span className="opacity-60">· {lines} lines</span>
+          <span className="ml-auto opacity-60">{open ? "collapse" : "expand"}</span>
+        </button>
+      )}
+
+      <div
+        className={cn("relative overflow-x-auto", !open && "overflow-y-hidden")}
+        style={open ? undefined : { maxHeight: COLLAPSED_HEIGHT }}
+      >
+        {before ? (
+          <MultiFileDiff
+            oldFile={{ name, contents: before }}
+            newFile={{ name, contents }}
+            options={options}
+            renderCustomHeader={noHeader}
+          />
+        ) : (
+          <File file={{ name, contents }} options={options} renderCustomHeader={noHeader} />
+        )}
+        {!open && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background to-transparent" />
+        )}
+      </div>
+
+      {long && !open && (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="w-full border-t border-border/60 bg-muted/20 px-3 py-1 text-left font-mono text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+        >
+          … {lines - COLLAPSE_OVER} more lines
+        </button>
+      )}
+    </div>
+  );
+}
