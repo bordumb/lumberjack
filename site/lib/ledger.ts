@@ -114,6 +114,7 @@ function fold(stand: string, repo: string): StandSnapshot | null {
   let goal = "";
   let name = "";
   let pid: number | null = null;
+  let resumedFrom: string | null = null;
   let integrationBranch = "";
   let integrationHead: string | null = null;
   let startedAt: number | null = null;
@@ -128,6 +129,7 @@ function fold(stand: string, repo: string): StandSnapshot | null {
       case "stand_started":
         goal = p.goal;
         pid = p.pid ?? null;
+        resumedFrom = p.resumed_from ?? null;
         integrationBranch = p.integration_branch;
         integrationHead = p.base;
         startedAt = at;
@@ -301,6 +303,7 @@ function fold(stand: string, repo: string): StandSnapshot | null {
     name,
     title: name || goal || stand,
     pid,
+    resumedFrom,
     lifecycle,
     integrationBranch,
     integrationHead,

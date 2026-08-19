@@ -14,6 +14,8 @@ export function GET(req: Request) {
     return {
       ...entry,
       goal: state?.goal ?? "",
+      title: state?.title ?? entry.stand,
+      resumedFrom: state?.resumedFrom ?? null,
       lifecycle: state?.lifecycle ?? "finished",
       workstreams: state?.workstreams.length ?? 0,
       conflicts: state?.conflicts.length ?? 0,

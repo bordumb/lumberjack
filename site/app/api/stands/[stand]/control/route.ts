@@ -1,4 +1,6 @@
 import { execFile, spawn } from "node:child_process";
+import { mkdirSync, openSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
 import { resolveRepo } from "@/lib/repos";
 
@@ -32,13 +34,36 @@ export async function POST(req: Request, ctx: { params: Promise<{ stand: string 
       case "continue": {
         // Not a resumption: halting killed the sessions and the supervisor exited.
         // This starts a new stand whose worktrees begin on this one's branches.
+        //
+        // The output goes to a file rather than /dev/null, and we wait a moment to
+        // see whether it dies on the spot. A detached process whose failure nobody
+        // reads is how "I clicked it and nothing happened" happens.
+        const logs = path.join(repo, ".lumberjack", "logs");
+        mkdirSync(logs, { recursive: true });
+        const log = path.join(logs, `continue-${stand}-${Date.now()}.log`);
+        const handle = openSync(log, "a");
         const child = spawn("uv", [...base, "run", "--repo", repo, "--resume", stand], {
           cwd: repo,
           detached: true,
-          stdio: "ignore",
+          stdio: ["ignore", handle, handle],
         });
         child.unref();
-        return Response.json({ ok: true, state: "continuing" });
+
+        const died = await new Promise<number | null>((resolve) => {
+          const timer = setTimeout(() => resolve(null), 4000);
+          child.once("exit", (code) => {
+            clearTimeout(timer);
+            resolve(code ?? 0);
+          });
+        });
+        if (died !== null && died !== 0) {
+          const detail = readFileSync(log, "utf8").trim().slice(-800);
+          return Response.json(
+            { error: detail || `lj run exited ${died}`, log },
+            { status: 409 },
+          );
+        }
+        return Response.json({ ok: true, state: "continuing", log });
       }
 
       case "rename": {

@@ -33,6 +33,7 @@ export function StandControls({ stand, repo, lifecycle, title, onChanged }: Prop
   const [confirming, setConfirming] = useState(false);
   const [name, setName] = useState(title);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
 
   useEffect(() => setName(title), [title]);
@@ -58,6 +59,43 @@ export function StandControls({ stand, repo, lifecycle, title, onChanged }: Prop
     }
   };
 
+  /**
+   * Continue starts a new run, so following it means waiting for that run to appear
+   * and going there. Reporting "started" and leaving the reader on the old run is how
+   * a working button still feels broken.
+   */
+  const carryOn = async () => {
+    setBusy(true);
+    setError(null);
+    setStatus("starting…");
+    try {
+      await control(stand, { repo, action: "continue" });
+    } catch (cause) {
+      setError((cause as Error).message);
+      setStatus(null);
+      setBusy(false);
+      return;
+    }
+    setStatus("waiting for the new run…");
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const response = await fetch(`/api/stands${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`);
+      const data = (await response.json()) as { stands: { stand: string; resumedFrom?: string }[] };
+      const started = data.stands.find((item) => item.resumedFrom === stand);
+      if (started) {
+        router.push(
+          repo
+            ? `/?repo=${encodeURIComponent(repo)}&stand=${started.stand}`
+            : `/?stand=${started.stand}`,
+        );
+        return;
+      }
+    }
+    setStatus(null);
+    setBusy(false);
+    setError("the new run did not appear; check .lumberjack/logs");
+  };
+
   // Only a run that is actually running can be paused. A stale one has nothing to stop.
   const running = lifecycle === "live";
   const resumable = lifecycle === "halted" || lifecycle === "stale";
@@ -68,6 +106,10 @@ export function StandControls({ stand, repo, lifecycle, title, onChanged }: Prop
         <span className="max-w-md truncate font-mono text-[11px] text-destructive" title={error}>
           {error}
         </span>
+      )}
+
+      {status && (
+        <span className="font-mono text-[11px] text-muted-foreground">{status}</span>
       )}
 
       {running && (
@@ -87,7 +129,7 @@ export function StandControls({ stand, repo, lifecycle, title, onChanged }: Prop
           type="button"
           disabled={busy}
           title="starts a new run from this one's branches"
-          onClick={() => void act({ action: "continue" })}
+          onClick={() => void carryOn()}
           className="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-2.5 py-1.5 text-[12px] font-medium text-white disabled:opacity-40"
         >
           <Play className="h-3.5 w-3.5" />

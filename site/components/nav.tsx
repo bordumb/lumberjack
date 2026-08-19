@@ -19,7 +19,8 @@ type Repo = { path: string; name: string; addedAt: number };
 type StandEntry = {
   stand: string;
   goal: string;
-  lifecycle: "live" | "halted" | "finished";
+  title: string;
+  lifecycle: "live" | "stale" | "halted" | "finished";
   workstreams: number;
   conflicts: number;
   comments: number;
@@ -27,6 +28,7 @@ type StandEntry = {
 
 const DOT: Record<StandEntry["lifecycle"], string> = {
   live: "bg-emerald-500",
+  stale: "bg-orange-500",
   halted: "bg-destructive",
   finished: "bg-amber-500/70",
 };
@@ -221,7 +223,7 @@ export function Nav() {
                     <Link
                       key={run.stand}
                       href={standHref(repo, run.stand)}
-                      title={run.goal || run.stand}
+                      title={run.title || run.goal || run.stand}
                       className={cn(
                         "flex items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-muted/50",
                         activeStand === run.stand
@@ -231,7 +233,7 @@ export function Nav() {
                     >
                       <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", DOT[run.lifecycle])} />
                       <span className="truncate font-mono text-[11px]">
-                        {run.goal || run.stand}
+                        {run.title || run.goal || run.stand}
                       </span>
                       {run.comments > 0 && (
                         <span className="ml-auto shrink-0 rounded-full bg-primary/15 px-1 font-mono text-[9.5px] text-primary">

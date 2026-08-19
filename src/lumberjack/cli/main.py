@@ -206,9 +206,23 @@ def run(
         )
         if run_request is not None:
             config = config.model_copy(update={"worker_runtime": run_request.runtime})
+
+        # Continuing a run supplies its own plan, so this has to happen before the
+        # check below rejects a command that has neither a goal nor a spec.
+        carried_from: StandId | None = None
+        carried_goal: str | None = None
+        if resume is not None and plan is None:
+            carried_from = StandId(resume)
+            carried = await _tasks_of_stand(repo, carried_from)
+            if not carried:
+                print(f"stand {resume} recorded no tasks, so there is nothing to continue")
+                raise SystemExit(3)
+            plan = Plan(tasks=carried, max_parallel=len(carried))
+            carried_goal = f"continue {resume}"
+
         if plan is not None and n is None:
             config = config.model_copy(update={"max_parallel": len(plan.tasks)})
-        goal_text = goal or (run_request.name if run_request else None)
+        goal_text = goal or carried_goal or (run_request.name if run_request else None)
         if goal_text is None and plan is None:
             print("give a goal, or one --spec per specification file")
             return
@@ -218,16 +232,8 @@ def run(
 
         async with Stand.open(config) as stand:
             if resume is not None:
-                if plan is None:
-                    # Continuing a stand does not need the specs again -- the run that
-                    # is being continued recorded its own tasks.
-                    carried = await _tasks_of_stand(repo, StandId(resume))
-                    if not carried:
-                        print(f"stand {resume} has no tasks to continue")
-                        raise SystemExit(3)
-                    plan = Plan(tasks=carried, max_parallel=len(carried))
-                    description = description or f"continue {resume}"
-                stand.supervisor.resumed_from = StandId(resume)
+                assert plan is not None
+                stand.supervisor.resumed_from = carried_from or StandId(resume)
                 found = await _resume_bases(config.repo, resume, plan)
                 if not found:
                     print(f"no branches found for stand {resume}; nothing to resume from")
