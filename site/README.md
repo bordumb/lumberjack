@@ -106,6 +106,27 @@ signature, the kind, the line, and the file it comes from. Definitions are index
 repo-wide from one `git grep`, because the names you most want explained are the ones a
 file *imports*, and those are never defined in front of you.
 
+## Operating a run
+
+The run header carries the controls. What they mean is not quite what their labels
+suggest, and the difference is the whole design:
+
+- **Pause** halts the stand. The supervisor cancels its workers, each session is
+  signalled as a process group, and worktrees holding unlanded work are preserved.
+- **Continue** cannot resume a halted stand -- halting killed the sessions and the
+  supervisor exited, so there is nothing to un-pause. It starts a *new* run whose
+  worktrees begin on this one's branches, carrying its tasks forward: `lj run --resume`.
+- **Rename** adds a label. The log is append-only, so the goal the run was originally
+  given stays in it; the name sits alongside.
+- **Delete** removes the ledger and the worktrees, and keeps the branches. A branch can
+  hold work that never landed, and the dialog says how much before you confirm.
+
+Pause only appears for a run that is genuinely running. "Live" used to mean "not halted
+and not finished", which is also true of a run that crashed an hour ago -- so the
+supervisor records its pid, and a stand with no process behind it reads `stale` rather
+than pretending. Runs recorded before pids existed fall back to whether their log is
+still moving.
+
 ## Leaving review comments
 
 Hover a line and a blue `+` appears in the gutter; click it and the composer opens

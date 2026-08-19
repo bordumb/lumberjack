@@ -17,7 +17,7 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from lumberjack.domain.task import TaskSpec
+from lumberjack.domain.task import TaskGraph, TaskSpec
 from lumberjack.ids import TaskId
 
 __all__ = [
@@ -108,14 +108,18 @@ class RunRequest(BaseModel):
             raise ValueError(msg)
         return self
 
-    def plan(self) -> object:
-        """The validated plan this request describes, DAG check included."""
-        from lumberjack.agents.outputs import Plan
+    def task_specs(self) -> tuple[TaskSpec, ...]:
+        """The tasks this request describes.
 
-        return Plan(
-            tasks=tuple(assignment.task for assignment in self.agents),
-            max_parallel=len(self.agents),
-        )
+        The domain does not reach up into the agent layer to build a ``Plan``; the CLI
+        does that, which keeps the dependency pointing one way and the return type
+        honest rather than ``object``.
+        """
+        return tuple(assignment.task for assignment in self.agents)
+
+    def graph(self) -> TaskGraph:
+        """The same tasks as a validated DAG, which is what makes the request runnable."""
+        return TaskGraph(tasks=self.task_specs())
 
     def models(self) -> dict[TaskId, str]:
         """Per-task model overrides, keyed the way the supervisor assigns work."""

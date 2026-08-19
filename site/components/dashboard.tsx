@@ -7,9 +7,11 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { StandSnapshot } from "@/lib/types";
+import { StandControls } from "@/components/stand-controls";
 
 const LIFECYCLE: Record<string, string> = {
   live: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+  stale: "bg-orange-500/15 text-orange-400 border-orange-500/30",
   halted: "bg-destructive/15 text-destructive border-destructive/30",
   finished: "bg-amber-500/15 text-amber-400 border-amber-500/30",
 };
@@ -29,7 +31,7 @@ function elapsed(from: number | null): string {
   return minutes < 60 ? `${minutes}m ${seconds % 60}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-export function Dashboard({ stand }: { stand: string }) {
+export function Dashboard({ stand, repo }: { stand: string; repo?: string | null }) {
   const [data, setData] = useState<StandSnapshot | null>(null);
   const [tick, setTick] = useState(0);
 
@@ -52,18 +54,29 @@ export function Dashboard({ stand }: { stand: string }) {
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-8">
       <header className="space-y-2">
-        <div className="flex items-center gap-3">
-          <h1 className="font-sans text-xl font-semibold tracking-[-0.02em]">
-            {data.goal || data.stand}
-          </h1>
-          <span
-            className={cn(
-              "rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider",
-              LIFECYCLE[data.lifecycle],
-            )}
-          >
-            {data.lifecycle}
-          </span>
+        <div className="flex items-start gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <h1 className="font-sans text-xl font-semibold tracking-[-0.02em]">
+              {data.title || data.stand}
+            </h1>
+            <span
+              className={cn(
+                "rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider",
+                LIFECYCLE[data.lifecycle],
+              )}
+            >
+              {data.lifecycle}
+            </span>
+          </div>
+          <div className="ml-auto shrink-0">
+            <StandControls
+              stand={data.stand}
+              repo={repo ?? null}
+              lifecycle={data.lifecycle}
+              title={data.title || data.stand}
+              onChanged={() => setTick((value) => value + 1)}
+            />
+          </div>
         </div>
         <p className="font-mono text-xs text-muted-foreground">
           {data.integrationBranch} @ {data.integrationHead?.slice(0, 8) ?? "—"} ·{" "}

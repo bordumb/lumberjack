@@ -64,6 +64,7 @@ __all__ = [
     "ReviewCommentPosted",
     "ReviewCommentResolved",
     "StandHalted",
+    "StandRenamed",
     "StandStarted",
     "TaskAssigned",
     "TaskPlanned",
@@ -90,6 +91,19 @@ class StandStarted(_Event):
     base: CommitSha
     integration_branch: str
     config: StandConfig
+    pid: int | None = None
+    """The supervisor's process id.
+
+    Without it, a stand that crashed is indistinguishable from one that is working:
+    both are un-halted with tasks outstanding. A control that offers to pause a stand
+    nothing is running is worse than no control.
+    """
+    resumed_from: StandId | None = None
+
+
+class StandRenamed(_Event):
+    kind: Literal["stand_renamed"] = "stand_renamed"
+    name: str
 
 
 class StandHalted(_Event):
@@ -347,6 +361,7 @@ class Bounced(_Event):
 EventPayload = Annotated[
     StandStarted
     | StandHalted
+    | StandRenamed
     | TaskPlanned
     | TaskAssigned
     | TaskStateChanged

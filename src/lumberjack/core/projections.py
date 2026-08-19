@@ -46,6 +46,7 @@ from lumberjack.domain.events import (
     ReviewCommentPosted,
     ReviewCommentResolved,
     StandHalted,
+    StandRenamed,
     StandStarted,
     TaskAssigned,
     TaskPlanned,
@@ -102,6 +103,11 @@ class Projections:
     stand: StandId
     cursor: Seq = field(default=Seq(0))
     goal: str = ""
+    name: str = ""
+    """What a person calls this run. History is append-only, so renaming adds a label
+    rather than rewriting the goal that was originally asked for."""
+    pid: int | None = None
+    resumed_from: StandId | None = None
     config: StandConfig | None = None
     base: CommitSha | None = None
     integration_branch: str = ""
@@ -152,10 +158,14 @@ class Projections:
         match payload:
             case StandStarted():
                 self.goal = payload.goal
+                self.pid = payload.pid
+                self.resumed_from = payload.resumed_from
                 self.config = payload.config
                 self.base = payload.base
                 self.integration_branch = payload.integration_branch
                 self.integration_head = payload.base
+            case StandRenamed():
+                self.name = payload.name
             case StandHalted():
                 self.halted = True
             case TaskPlanned():
@@ -380,11 +390,23 @@ class Projections:
             return False
         return all(task.kind in ("landed", "blocked", "abandoned") for task in self.tasks.values())
 
-    def lifecycle(self) -> str:
-        """``live``, ``halted`` or ``finished`` -- what a reader needs before anything else."""
+    @property
+    def title(self) -> str:
+        return self.name or self.goal or str(self.stand)
+
+    def lifecycle(self, alive: bool | None = None) -> str:
+        """``live``, ``stale``, ``halted`` or ``finished``.
+
+        ``alive`` is whether the supervisor process still exists, which a projection
+        cannot know on its own. Passing ``None`` keeps the older, more forgiving
+        reading; passing ``False`` for a stand with work outstanding gives ``stale``,
+        which is the difference between a run that is working and one that died.
+        """
         if self.halted:
             return "halted"
-        return "finished" if self.finished() else "live"
+        if self.finished():
+            return "finished"
+        return "live" if alive is not False else "stale"
 
     def completed_tasks(self) -> frozenset[TaskId]:
         return frozenset(self.landed)

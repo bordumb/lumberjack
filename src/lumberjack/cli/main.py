@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated
 
 import cyclopts
 
@@ -19,8 +19,9 @@ from lumberjack.adapters.clock import SystemClock
 from lumberjack.adapters.git_cli import GitCli
 from lumberjack.adapters.sqlite_ledger import SqliteLedger
 from lumberjack.agents.outputs import Plan
+from lumberjack.core.control import StandControl, stand_alive
 from lumberjack.core.projections import Projections
-from lumberjack.domain.events import StandHalted
+from lumberjack.domain.events import StandHalted, StandRenamed
 from lumberjack.domain.request import MODELS, RunRequest
 from lumberjack.domain.task import TaskSpec
 from lumberjack.domain.workstream import ArbitrationMode, StandConfig
@@ -199,7 +200,7 @@ def run(
 
         run_request = RunRequest.model_validate_json(request.read_text()) if request else None
         plan = (
-            cast("Plan", run_request.plan())
+            Plan(tasks=run_request.task_specs(), max_parallel=len(run_request.agents))
             if run_request
             else (_plan_from_specs(repo, spec) if spec else None)
         )
@@ -218,8 +219,15 @@ def run(
         async with Stand.open(config) as stand:
             if resume is not None:
                 if plan is None:
-                    print("--resume needs --spec, so tasks can be matched by id")
-                    raise SystemExit(2)
+                    # Continuing a stand does not need the specs again -- the run that
+                    # is being continued recorded its own tasks.
+                    carried = await _tasks_of_stand(repo, StandId(resume))
+                    if not carried:
+                        print(f"stand {resume} has no tasks to continue")
+                        raise SystemExit(3)
+                    plan = Plan(tasks=carried, max_parallel=len(carried))
+                    description = description or f"continue {resume}"
+                stand.supervisor.resumed_from = StandId(resume)
                 found = await _resume_bases(config.repo, resume, plan)
                 if not found:
                     print(f"no branches found for stand {resume}; nothing to resume from")
@@ -249,6 +257,12 @@ def run(
                     print(f"  {path}")
 
     asyncio.run(go())
+
+
+async def _tasks_of_stand(repo: Path, stand: StandId) -> tuple[TaskSpec, ...]:
+    """The tasks a stand was given, read back from its own ledger."""
+    projections = await _replay(repo, stand)
+    return tuple(projections.specs.values())
 
 
 async def _resume_bases(repo: Path, stand: str, plan: Plan) -> dict[TaskId, CommitSha]:
@@ -400,9 +414,12 @@ def status(*, repo: Path = Path(), stand: str | None = None) -> None:
             return
         projections = await _replay(repo, target)
         clock = SystemClock()
-        lifecycle = projections.lifecycle()
-        print(f"stand {target} [{lifecycle}]: {projections.goal}")
-        if lifecycle != "live":
+        ledger_file = _state_root(repo) / target / "ledger.db"
+        lifecycle = projections.lifecycle(stand_alive(projections.pid, ledger_file))
+        print(f"stand {target} [{lifecycle}]: {projections.title}")
+        if lifecycle == "stale":
+            print("  the supervisor that started this run is gone; nothing below is running")
+        elif lifecycle != "live":
             print(f"  this stand is {lifecycle}; nothing below is running")
         print(
             f"integration: {projections.integration_branch} @ "
@@ -511,6 +528,71 @@ def halt(*, repo: Path = Path(), stand: str | None = None, reason: str = "operat
         finally:
             await ledger.close()
         print(f"halt requested for {target}")
+
+    asyncio.run(go())
+
+
+@app.command
+def rename(name: str, *, repo: Path = Path(), stand: str | None = None) -> None:
+    """Give a run a name.
+
+    The log is append-only, so this adds a label rather than rewriting the goal the
+    run was originally given -- both stay visible.
+    """
+
+    async def go() -> None:
+        target = StandId(stand) if stand else _latest_stand(repo)
+        if target is None:
+            print("no stands found")
+            raise SystemExit(3)
+        ledger = await SqliteLedger.open(target, _state_root(repo) / target / "ledger.db")
+        try:
+            await ledger.append(StandRenamed(name=name))
+        finally:
+            await ledger.close()
+        print(f"{target} is now {name!r}")
+
+    asyncio.run(go())
+
+
+@app.command
+def delete(
+    *,
+    repo: Path = Path(),
+    stand: str | None = None,
+    force: bool = False,
+    drop_branches: bool = False,
+) -> None:
+    """Delete a run: its ledger, its worktrees, and optionally its branches.
+
+    Branches are kept by default. A branch can hold work that never landed, and a
+    deletion that silently discards it is not one anybody can undo.
+    """
+
+    async def go() -> None:
+        target = StandId(stand) if stand else _latest_stand(repo)
+        if target is None:
+            print("no stands found")
+            raise SystemExit(3)
+        config = _load_config(repo)
+        projections = await _replay(repo, target)
+        control = StandControl(repo=repo, config=config)
+        git = GitCli(repo=repo)
+
+        plan = await control.plan_deletion(target, projections, git)
+        print(f"{target}: {plan.describe()}")
+        if plan.running and not force:
+            print("  it is still running. Halt it first, or pass --force.")
+            raise SystemExit(1)
+        if plan.unlanded and not force:
+            for branch in plan.unlanded:
+                print(f"  holds unlanded work: {branch}")
+            print("  pass --force to delete anyway; branches are kept unless --drop-branches.")
+            raise SystemExit(1)
+
+        await control.delete(target, projections, git, drop_branches=drop_branches)
+        kept = "" if drop_branches else f" ({len(plan.branches)} branch(es) kept)"
+        print(f"deleted {target}{kept}")
 
     asyncio.run(go())
 

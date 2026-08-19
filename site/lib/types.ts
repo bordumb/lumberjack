@@ -1,4 +1,4 @@
-export type Lifecycle = "live" | "halted" | "finished";
+export type Lifecycle = "live" | "stale" | "halted" | "finished";
 
 export type Workstream = {
   id: string;
@@ -50,6 +50,9 @@ export type ReviewComment = {
 export type StandSnapshot = {
   stand: string;
   goal: string;
+  name: string;
+  title: string;
+  pid: number | null;
   lifecycle: Lifecycle;
   integrationBranch: string;
   integrationHead: string | null;

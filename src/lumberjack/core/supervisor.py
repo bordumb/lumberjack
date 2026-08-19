@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Literal
@@ -78,6 +79,7 @@ from lumberjack.domain.workstream import Workstream, Worktree
 from lumberjack.ids import (
     AgentId,
     CommitSha,
+    StandId,
     TaskId,
     WorkstreamId,
     new_agent_id,
@@ -142,6 +144,7 @@ class Supervisor:
     _running: dict[WorkstreamId, asyncio.Task[None]] = field(default_factory=dict)
     _background: list[asyncio.Task[None]] = field(default_factory=list)
     _arbitrating: set[str] = field(default_factory=set)
+    resumed_from: StandId | None = None
     model_overrides: dict[TaskId, str] = field(default_factory=dict)
     """Per-task model, when a run was configured agent by agent."""
     resume_bases: dict[TaskId, CommitSha] = field(default_factory=dict)
@@ -202,6 +205,8 @@ class Supervisor:
                 base=base,
                 integration_branch=branch,
                 config=services.config,
+                pid=os.getpid(),
+                resumed_from=self.resumed_from,
             )
         )
         services.projections.repo_map = await Scout(

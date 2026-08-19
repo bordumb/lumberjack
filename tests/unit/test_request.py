@@ -17,13 +17,13 @@ def agent(task_id: str, model: str = "claude-opus-5") -> AgentAssignment:
     )
 
 
-def test_a_request_yields_a_validated_plan() -> None:
+def test_a_request_yields_a_validated_graph() -> None:
     request = RunRequest(name="nightly", agents=(agent("a"), agent("b")))
 
-    plan = request.plan()
+    graph = request.graph()
 
-    assert [item.task_id for item in plan.tasks] == ["a", "b"]  # type: ignore[attr-defined]
-    assert plan.max_parallel == 2  # type: ignore[attr-defined]
+    assert [item.task_id for item in graph.tasks] == ["a", "b"]
+    assert [item.task_id for item in request.task_specs()] == ["a", "b"]
 
 
 def test_models_are_assignments_not_task_properties() -> None:

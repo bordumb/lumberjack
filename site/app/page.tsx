@@ -24,7 +24,7 @@ export default async function Page({
 
   return (
     <main>
-      <Dashboard stand={stand} />
+      <Dashboard stand={stand} repo={repo ?? null} />
     </main>
   );
 }

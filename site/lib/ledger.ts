@@ -37,6 +37,25 @@ export function latestStand(repo: string = DEFAULT_REPO): string | null {
   return listStands(repo)[0]?.stand ?? null;
 }
 
+/**
+ * Snapshots are cached on the ledger's size and mtime.
+ *
+ * The nav polls every stand every few seconds and a snapshot is a fold over the whole
+ * log -- one of these is already 5 MB. Re-reading them on a timer pinned a core and was
+ * slow enough to distort the Python test suite running alongside it. An append-only log
+ * makes the invalidation trivial: if the file has not changed, neither has the answer.
+ */
+const snapshots = new Map<string, { key: string; value: StandSnapshot | null }>();
+
+function ledgerKey(file: string): string {
+  try {
+    const stat = statSync(file);
+    return `${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return "missing";
+  }
+}
+
 function readEvents(stand: string, repo: string): Row[] {
   const file = path.join(stateRoot(repo), stand, "ledger.db");
   if (!existsSync(file)) return [];
@@ -69,6 +88,17 @@ export function transcriptFile(worktree: string): string | null {
 }
 
 export function snapshot(stand: string, repo: string = DEFAULT_REPO): StandSnapshot | null {
+  const file = path.join(stateRoot(repo), stand, "ledger.db");
+  const key = ledgerKey(file);
+  const cached = snapshots.get(`${repo}:${stand}`);
+  if (cached && cached.key === key) return cached.value;
+
+  const value = fold(stand, repo);
+  snapshots.set(`${repo}:${stand}`, { key, value });
+  return value;
+}
+
+function fold(stand: string, repo: string): StandSnapshot | null {
   const rows = readEvents(stand, repo);
   if (rows.length === 0) return null;
 
@@ -82,6 +112,8 @@ export function snapshot(stand: string, repo: string = DEFAULT_REPO): StandSnaps
   const eventCounts: Record<string, number> = {};
 
   let goal = "";
+  let name = "";
+  let pid: number | null = null;
   let integrationBranch = "";
   let integrationHead: string | null = null;
   let startedAt: number | null = null;
@@ -95,12 +127,16 @@ export function snapshot(stand: string, repo: string = DEFAULT_REPO): StandSnaps
     switch (row.kind) {
       case "stand_started":
         goal = p.goal;
+        pid = p.pid ?? null;
         integrationBranch = p.integration_branch;
         integrationHead = p.base;
         startedAt = at;
         break;
       case "stand_halted":
         halted = true;
+        break;
+      case "stand_renamed":
+        name = p.name;
         break;
       case "task_planned":
         tasks.set(p.spec.task_id, { state: "pending", title: p.spec.title });
@@ -248,15 +284,23 @@ export function snapshot(stand: string, repo: string = DEFAULT_REPO): StandSnaps
   }
 
   const list = [...workstreams.values()];
+  // "live" has to mean a supervisor is actually running. A crashed stand is
+  // un-halted with work outstanding, which is indistinguishable from a working one
+  // unless liveness is checked rather than assumed.
   const lifecycle: Lifecycle = halted
     ? "halted"
     : list.length > 0 && list.every((w) => TERMINAL.has(w.state))
       ? "finished"
-      : "live";
+      : alive(pid, path.join(stateRoot(repo), stand, "ledger.db"))
+        ? "live"
+        : "stale";
 
   return {
     stand,
     goal,
+    name,
+    title: name || goal || stand,
+    pid,
     lifecycle,
     integrationBranch,
     integrationHead,
@@ -268,6 +312,25 @@ export function snapshot(stand: string, repo: string = DEFAULT_REPO): StandSnaps
     eventCounts,
     totalEvents: rows.length,
   };
+}
+
+const IDLE_MS = 3 * 60 * 1000;
+
+/** The process check when there is a pid; otherwise whether the log is still moving. */
+function alive(pid: number | null, ledger: string): boolean {
+  if (pid !== null) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (cause) {
+      return (cause as NodeJS.ErrnoException).code === "EPERM";
+    }
+  }
+  try {
+    return Date.now() - statSync(ledger).mtimeMs < IDLE_MS;
+  } catch {
+    return false;
+  }
 }
 
 function statusOf(
