@@ -1,4 +1,6 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
+import { Nav } from "@/components/nav";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -23,7 +25,14 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full">
+        <div className="flex h-screen">
+          <Suspense fallback={<div className="w-64 shrink-0 border-r border-border/60" />}>
+            <Nav />
+          </Suspense>
+          <div className="min-w-0 flex-1 overflow-auto">{children}</div>
+        </div>
+      </body>
     </html>
   );
 }

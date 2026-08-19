@@ -3,15 +3,19 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { REPO } from "./ledger";
+import { DEFAULT_REPO } from "./repos";
 
 const run = promisify(execFile);
 
 /** Read a file as it exists at a revision. Returns null when it is absent there. */
-export async function showFile(rev: string, file: string): Promise<string | null> {
+export async function showFile(
+  rev: string,
+  file: string,
+  repo: string = DEFAULT_REPO,
+): Promise<string | null> {
   try {
     const { stdout } = await run("git", ["show", `${rev}:${file}`], {
-      cwd: REPO,
+      cwd: repo,
       maxBuffer: 32 * 1024 * 1024,
     });
     return stdout;
@@ -20,19 +24,26 @@ export async function showFile(rev: string, file: string): Promise<string | null
   }
 }
 
-export async function mergeBase(left: string, right: string): Promise<string | null> {
+export async function mergeBase(
+  left: string,
+  right: string,
+  repo: string = DEFAULT_REPO,
+): Promise<string | null> {
   try {
-    const { stdout } = await run("git", ["merge-base", left, right], { cwd: REPO });
+    const { stdout } = await run("git", ["merge-base", left, right], { cwd: repo });
     return stdout.trim() || null;
   } catch {
     return null;
   }
 }
 
-export async function resolveRef(ref: string): Promise<string | null> {
+export async function resolveRef(
+  ref: string,
+  repo: string = DEFAULT_REPO,
+): Promise<string | null> {
   try {
     const { stdout } = await run("git", ["rev-parse", "--verify", `${ref}^{commit}`], {
-      cwd: REPO,
+      cwd: repo,
     });
     return stdout.trim() || null;
   } catch {
@@ -51,6 +62,7 @@ export async function mergeWithMarkers(
   ours: string,
   theirs: string,
   labels: { ours: string; theirs: string },
+  repo: string = DEFAULT_REPO,
 ): Promise<{ merged: string; conflicted: boolean }> {
   const dir = await mkdtemp(path.join(tmpdir(), "lj-merge-"));
   try {
@@ -72,7 +84,7 @@ export async function mergeWithMarkers(
           "-L", labels.ours, "-L", "base", "-L", labels.theirs,
           files.ours, files.base, files.theirs,
         ],
-        { cwd: REPO, maxBuffer: 32 * 1024 * 1024 },
+        { cwd: repo, maxBuffer: 32 * 1024 * 1024 },
       );
       return { merged: stdout, conflicted: false };
     } catch (cause) {
@@ -96,8 +108,9 @@ const symbolCache = new Map<string, Record<string, { file: string; line: number;
  */
 export async function repoDefinitions(
   rev: string,
+  repo: string = DEFAULT_REPO,
 ): Promise<Record<string, { file: string; line: number; text: string }>> {
-  const cached = symbolCache.get(rev);
+  const cached = symbolCache.get(`${repo}:${rev}`);
   if (cached) return cached;
 
   const found: Record<string, { file: string; line: number; text: string }> = {};
@@ -109,7 +122,7 @@ export async function repoDefinitions(
         "^[[:space:]]*(async def |def |class )",
         rev, "--", "*.py",
       ],
-      { cwd: REPO, maxBuffer: 64 * 1024 * 1024 },
+      { cwd: repo, maxBuffer: 64 * 1024 * 1024 },
     );
     for (const line of stdout.split("\n")) {
       // <rev>:<path>:<lineno>:<text>
@@ -123,6 +136,6 @@ export async function repoDefinitions(
   } catch {
     // An empty index is a hover that says nothing, which is the correct failure here.
   }
-  symbolCache.set(rev, found);
+  symbolCache.set(`${repo}:${rev}`, found);
   return found;
 }

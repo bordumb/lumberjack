@@ -12,11 +12,28 @@ npm run dev
 Then open http://localhost:3000. It finds the most recent stand under `.lumberjack/`
 automatically; pass `?stand=<id>` for an older one.
 
+## Projects and runs
+
+The left nav is the hierarchy: a repository, with its runs nested beneath it. Clicking a
+repository opens its file tree; clicking a run opens that run's dashboard. It collapses
+to an icon rail, and remembers which you chose.
+
+**Add project** at the top opens a folder browser. It browses the *server's* filesystem
+rather than using the browser's directory picker, because both `showDirectoryPicker()`
+and `<input webkitdirectory>` deliberately withhold the absolute path and git needs one.
+The dashboard already runs on the same machine as the repositories it reads, so this is
+the trust boundary a terminal has, not a wider one. Folders containing a `.git` are
+marked, and only those can be added.
+
+Registered repositories live in `~/.lumberjack/repos.json`. That file is the only stored
+state in the dashboard, and deliberately so: it holds paths a person chose, which is the
+one thing here that cannot be recomputed from git or from a ledger.
+
 ## How it reads the world
 
 Two sources, no daemon and no writes:
 
-- **`.lumberjack/<stand>/ledger.db`** — the append-only event log, read through Node 22's
+- **`<repo>/.lumberjack/<stand>/ledger.db`** — the append-only event log, read through Node 22's
   built-in `node:sqlite` (so there is no native dependency to build). Every metric on the
   dashboard is a fold over these events, the same way `lj status` computes them.
 - **`~/.claude/projects/<worktree>/*.jsonl`** — the Claude Code session transcript for each

@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import { DEFAULT_REPO } from "./repos";
 import os from "node:os";
 import type {
   CommentStatus,
@@ -12,30 +13,32 @@ import type {
 } from "./types";
 
 /** The repository root: the dashboard lives in `site/` inside it. */
-export const REPO = path.resolve(process.env.LUMBERJACK_REPO ?? path.join(process.cwd(), ".."));
-const STATE = path.join(REPO, ".lumberjack");
+export { DEFAULT_REPO as REPO } from "./repos";
+
+const stateRoot = (repo: string): string => path.join(repo, ".lumberjack");
 
 const TERMINAL = new Set(["landed", "blocked", "abandoned"]);
 
 type Row = { seq: number; at: string; actor: string; kind: string; payload: string };
 
-export function listStands(): { stand: string; modified: number }[] {
-  if (!existsSync(STATE)) return [];
-  return readdirSync(STATE)
-    .filter((name) => existsSync(path.join(STATE, name, "ledger.db")))
+export function listStands(repo: string = DEFAULT_REPO): { stand: string; modified: number }[] {
+  const state = stateRoot(repo);
+  if (!existsSync(state)) return [];
+  return readdirSync(state)
+    .filter((name) => existsSync(path.join(state, name, "ledger.db")))
     .map((stand) => ({
       stand,
-      modified: statSync(path.join(STATE, stand, "ledger.db")).mtimeMs,
+      modified: statSync(path.join(state, stand, "ledger.db")).mtimeMs,
     }))
     .sort((a, b) => b.modified - a.modified);
 }
 
-export function latestStand(): string | null {
-  return listStands()[0]?.stand ?? null;
+export function latestStand(repo: string = DEFAULT_REPO): string | null {
+  return listStands(repo)[0]?.stand ?? null;
 }
 
-function readEvents(stand: string): Row[] {
-  const file = path.join(STATE, stand, "ledger.db");
+function readEvents(stand: string, repo: string): Row[] {
+  const file = path.join(stateRoot(repo), stand, "ledger.db");
   if (!existsSync(file)) return [];
   const db = new DatabaseSync(file, { readOnly: true });
   try {
@@ -65,8 +68,8 @@ export function transcriptFile(worktree: string): string | null {
   return files[0] ? path.join(dir, files[0].name) : null;
 }
 
-export function snapshot(stand: string): StandSnapshot | null {
-  const rows = readEvents(stand);
+export function snapshot(stand: string, repo: string = DEFAULT_REPO): StandSnapshot | null {
+  const rows = readEvents(stand, repo);
   if (rows.length === 0) return null;
 
   const workstreams = new Map<string, Workstream>();
