@@ -25,3 +25,4 @@ Keep in mind the level of quality we want:
 * Design the API holistically and fully upfront
 * PydanticAI for agenting tooling 
 * uv for build, ruff for linting, ty for typing
+* For code diffs use https://diffs.com/

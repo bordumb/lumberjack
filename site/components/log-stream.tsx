@@ -5,6 +5,7 @@ import { CheckCircle2, CircleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { AgentMessage } from "@/components/agent-message";
 import { CodeSnippet } from "@/components/code-snippet";
+import { ToolResultView } from "@/components/tool-result";
 import { CommentCard, CommentComposer, useComments } from "@/components/comments";
 import type { Target } from "@/components/comments";
 import type { ReviewComment } from "@/lib/types";
@@ -212,15 +213,20 @@ function Entry({
           <span>{ok ? "result" : "error"}</span>
           <span className="opacity-60">· {lines} lines</span>
         </div>
-        <CodeSnippet
-          code={preview}
-          language={answers?.language ?? "text"}
-          target={answers?.target ?? ""}
-          symbols={symbols}
-          annotations={annotations}
-          renderAnnotation={renderComment}
-          onSelectLines={selectHandler}
-        />
+        {answers && isCoordination(answers.label) ? (
+          // Coordination tools answer with structure; the rest answer with file text.
+          <ToolResultView raw={preview} />
+        ) : (
+          <CodeSnippet
+            code={preview}
+            language={answers?.language ?? "text"}
+            target={answers?.target ?? ""}
+            symbols={symbols}
+            annotations={annotations}
+            renderAnnotation={renderComment}
+            onSelectLines={selectHandler}
+          />
+        )}
       </div>
     );
   }

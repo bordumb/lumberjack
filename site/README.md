@@ -113,7 +113,17 @@ answer — a `Read` of a `.py` file reads as Python — and the Read tool's own 
 gutter is stripped first so it does not collide with the one the renderer draws. Anything
 over five lines collapses by default, since a transcript is mostly file contents.
 
-Token hover works here too, from the same repo-wide index the conflict pages use.
+Coordination tools answer with structure, not file text, so their results are read
+rather than printed. `lib/tool-result.ts` unwraps the MCP `{"result": ...}` envelope and
+recognises the awareness digest -- whose sections were rendered from typed data in
+`core/digest.py` before the model ever saw them -- so `MESSAGES`, `OPEN CONFLICTS` and
+`HUMAN REVIEW` come back as sections with severity colouring instead of one escaped
+line. It dispatches on shape rather than tool name: a rule keyed on the name goes stale
+the moment a tool is added, and fails silently when it does.
+
+Token hover works here too, from the same repo-wide index the conflict pages use, and
+any snippet with a real file behind it carries the same `+` gutter affordance as the
+conflict diffs.
 
 **`/notes/<id>`** — one page per blackboard note. Agents write markdown -- headings,
 tables, fenced code -- and a three-line clamp on the dashboard hides most of it, so the

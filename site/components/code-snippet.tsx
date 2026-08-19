@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { File, MultiFileDiff } from "@pierre/diffs/react";
 import { ChevronRight } from "lucide-react";
+import { GutterAdd } from "@/components/gutter-add";
 import { cn } from "@/lib/utils";
 import { TokenHoverCard, useTokenHover } from "@/components/token-hover";
 import type { SymbolInfo } from "@/components/token-hover";
@@ -56,10 +57,11 @@ export function CodeSnippet({
     diffStyle: "split",
     onTokenEnter,
     onTokenLeave,
-    // Selection is only offered where a comment can mean something: a snippet with a
+    // Commenting is only offered where a comment can mean something: a snippet with a
     // real path behind it. Commenting on a shell command has nowhere to land.
     ...(onSelectLines
       ? {
+          enableGutterUtility: true,
           enableLineSelection: true,
           onLineSelectionEnd(range: { start: number; end: number } | null) {
             if (range) onSelectLines(range);
@@ -71,6 +73,15 @@ export function CodeSnippet({
   // The surrounding row already names the file and the tool. A second header inside
   // the snippet repeats it and costs a line of vertical space every time.
   const noHeader = () => null;
+  // The same affordance as the conflict pages: a comment starts where the cursor is.
+  const gutter = onSelectLines
+    ? (getHoveredLine: () => { lineNumber: number } | undefined) => (
+        <GutterAdd
+          getHoveredLine={getHoveredLine}
+          onPick={(line) => onSelectLines({ start: line, end: line })}
+        />
+      )
+    : undefined;
 
   return (
     <div className="mt-2 overflow-hidden rounded-md border border-border/60">
@@ -100,6 +111,7 @@ export function CodeSnippet({
             lineAnnotations={annotations}
             renderAnnotation={renderAnnotation}
             renderCustomHeader={noHeader}
+            renderGutterUtility={gutter}
           />
         ) : (
           <File
@@ -108,6 +120,7 @@ export function CodeSnippet({
             lineAnnotations={annotations}
             renderAnnotation={renderAnnotation}
             renderCustomHeader={noHeader}
+            renderGutterUtility={gutter}
           />
         )}
         {!open && (
