@@ -68,7 +68,12 @@ class WorktreeSensor:
     async def scan(self) -> WorktreeDelta | None:
         """Compute the delta, publish it, and run the derived checks."""
         snapshot = await self.git.snapshot(self.workstream.worktree)
-        changes = await self.git.changes(self.workstream.worktree.base, snapshot.commit)
+        # Measure against where the run began, not where this worktree was checked out.
+        # A lane picked up in a later session starts from the branch tip, so diffing
+        # from the checkout would report a task that has changed 25 files as changing
+        # none of them.
+        base = self.projections.base or self.workstream.worktree.base
+        changes = await self.git.changes(base, snapshot.commit)
         if not changes:
             return None
 

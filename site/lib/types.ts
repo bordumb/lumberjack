@@ -17,6 +17,7 @@ export type Workstream = {
   lastActivity: number | null;
   toolCalls: number;
   present: boolean;
+  active: boolean;
 };
 
 export type Conflict = {

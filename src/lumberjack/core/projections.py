@@ -179,6 +179,17 @@ class Projections:
                 self.specs[payload.spec.task_id] = payload.spec
                 self.tasks[payload.spec.task_id] = Pending(spec=payload.spec)
             case TaskAssigned():
+                # One lane per task. A second assignment supersedes the first rather
+                # than running alongside it -- otherwise a resumed stand shows two of
+                # every workstream, and the older one never moves again.
+                for existing in self.workstreams.values():
+                    if (
+                        existing.task == payload.task
+                        and existing.workstream_id != payload.workstream.workstream_id
+                    ):
+                        self.workstreams[existing.workstream_id] = existing.model_copy(
+                            update={"active": False}
+                        )
                 self.workstreams[payload.workstream.workstream_id] = payload.workstream
             case TaskStateChanged():
                 self.tasks[payload.task_id] = payload.state

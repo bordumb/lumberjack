@@ -153,6 +153,13 @@ function fold(stand: string, repo: string): StandSnapshot | null {
         break;
       case "task_assigned": {
         const w = p.workstream;
+        // One lane per task: a later assignment supersedes an earlier one rather than
+        // sitting beside it. Without this a resumed run lists two of every workstream.
+        for (const [id, existing] of workstreams) {
+          if (existing.task === p.task && id !== w.workstream_id) {
+            workstreams.set(id, { ...existing, active: false });
+          }
+        }
         workstreams.set(w.workstream_id, {
           id: w.workstream_id,
           agent: w.agent,
@@ -170,6 +177,7 @@ function fold(stand: string, repo: string): StandSnapshot | null {
           lastActivity: at,
           toolCalls: 0,
           present: existsSync(w.worktree.path),
+          active: true,
         });
         break;
       }
@@ -279,6 +287,13 @@ function fold(stand: string, repo: string): StandSnapshot | null {
     const w = workstreams.get(lease.workstream);
     if (w) w.leases.push({ mode: lease.mode, scope: lease.scope });
   }
+  const live = new Set(
+    [...workstreams.values()].filter((item) => item.active).map((item) => item.id),
+  );
+  for (const [id, conflict] of [...conflicts]) {
+    // A conflict between lanes that no longer exist is history, not a live problem.
+    if (!conflict.between.every((item) => live.has(item))) conflicts.delete(id);
+  }
   for (const conflict of conflicts.values()) {
     for (const id of conflict.between) {
       const w = workstreams.get(id);
@@ -293,7 +308,8 @@ function fold(stand: string, repo: string): StandSnapshot | null {
     comment.status = statusOf(comment, workstreams, awarenessAt);
   }
 
-  const list = [...workstreams.values()];
+  // Superseded lanes stay in the ledger but are not what the run is doing now.
+  const list = [...workstreams.values()].filter((item) => item.active);
   // "live" has to mean a supervisor is actually running. A crashed stand is
   // un-halted with work outstanding, which is indistinguishable from a working one
   // unless liveness is checked rather than assumed.

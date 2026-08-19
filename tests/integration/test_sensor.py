@@ -196,3 +196,27 @@ async def test_claim_overlap_is_announced_as_a_notice(services: Services, make_w
     ]
     assert overlaps
     assert overlaps[0].severity is Severity.NOTICE
+
+
+async def test_a_revived_lane_still_reports_the_whole_task(
+    services: Services, make_workstream
+) -> None:
+    """Continuity across sessions.
+
+    A lane picked up later starts its worktree at the branch tip. Measuring from there
+    would report a task that has changed a file as having changed nothing, which is how
+    a resumed run comes to look like it lost its work.
+    """
+    workstream = await make_workstream("a")
+    (workstream.worktree.path / "pkg" / "core.py").write_text("def alpha() -> int:\n    return 9\n")
+    tip = await services.git.commit_all(workstream.worktree, "earlier session")
+    assert tip is not None
+
+    # A later session sees the branch tip as its starting point.
+    revived = workstream.model_copy(
+        update={"worktree": workstream.worktree.model_copy(update={"base": tip})}
+    )
+    delta = await sensor_for(services, revived).scan()
+
+    assert delta is not None
+    assert "pkg/core.py" in delta.paths
