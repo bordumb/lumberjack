@@ -115,6 +115,7 @@ function fold(stand: string, repo: string): StandSnapshot | null {
   let name = "";
   let pid: number | null = null;
   let resumedFrom: string | null = null;
+  let session = 1;
   let integrationBranch = "";
   let integrationHead: string | null = null;
   let startedAt: number | null = null;
@@ -136,6 +137,13 @@ function fold(stand: string, repo: string): StandSnapshot | null {
         break;
       case "stand_halted":
         halted = true;
+        break;
+      case "stand_resumed":
+        // A stand can be picked up again: the halt is lifted and a new supervisor
+        // owns it. Without this the badge stays halted through a working session.
+        halted = false;
+        pid = p.pid ?? null;
+        session = p.session ?? session;
         break;
       case "stand_renamed":
         name = p.name;
@@ -303,6 +311,7 @@ function fold(stand: string, repo: string): StandSnapshot | null {
     name,
     title: name || goal || stand,
     pid,
+    session,
     resumedFrom,
     lifecycle,
     integrationBranch,

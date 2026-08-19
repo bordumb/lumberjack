@@ -53,6 +53,7 @@ export type StandSnapshot = {
   name: string;
   title: string;
   pid: number | null;
+  session: number;
   resumedFrom: string | null;
   lifecycle: Lifecycle;
   integrationBranch: string;

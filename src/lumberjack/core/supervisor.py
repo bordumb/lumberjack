@@ -65,12 +65,12 @@ from lumberjack.domain.events import (
     TaskPlanned,
 )
 from lumberjack.domain.task import (
+    Abandoned,
     Assigned,
     AwaitingIntegration,
     Blocked,
     BlockReason,
     Landed,
-    Pending,
     Running,
     Task,
     TaskGraph,
@@ -239,6 +239,7 @@ class Supervisor:
         assert self.runner is not None
         await self.runner.preflight(self.services)
 
+        await self._requeue_landings()
         graph = TaskGraph(tasks=tuple(projections.specs[task] for task in outstanding))
         base = projections.base or await self.services.git.resolve(self.services.config.base_ref)
         self._background = [
@@ -253,6 +254,16 @@ class Supervisor:
             await self._shutdown()
             await self.services.train.drain()
         return self._outcome(projections.title, self.services.clock.now() - started)
+
+    async def _requeue_landings(self) -> None:
+        """Work that was waiting to land when the session ended is still waiting.
+
+        The train's queue lives in the process that built it, so a new session has to
+        put those entries back or they wait for ever.
+        """
+        for task in self.services.projections.tasks.values():
+            if isinstance(task, AwaitingIntegration):
+                await self.services.train.request(task.workstream, task.tip)
 
     async def plan(self, goal: str) -> TaskGraph:
         assert self.planner_agent is not None
@@ -319,20 +330,17 @@ class Supervisor:
     async def _schedule(self, graph: TaskGraph, base: CommitSha) -> None:
         """Launch ready tasks up to ``max_parallel``, until everything is terminal."""
         while not self.stop.is_set():
+            # One pass, one rule: every ready task that is not finished and has no
+            # worker in this process gets one. That covers a first launch, a task the
+            # train bounced back, and a task a previous session left behind -- three
+            # cases that were three code paths, two of which were wrong.
             completed = self.services.projections.completed_tasks()
             for spec in graph.ready(completed):
                 if len(self._running) >= self.services.config.max_parallel:
                     break
                 if self._already_handled(spec.task_id):
                     continue
-                await self._launch(spec, base)
-
-            # A bounced task returns to Running with the failure attached, but nothing
-            # re-invokes its worker: the train hands the work back and the supervisor
-            # has to pick it up. Without this a bounce silently orphans the task and
-            # the stand reports success with the work missing.
-            for orphan in self._orphaned(graph):
-                await self._relaunch(orphan)
+                await self._ensure_worker(spec, base)
 
             if not self._running:
                 # The stand is not over while work is still queued to land. Draining
@@ -357,37 +365,38 @@ class Supervisor:
                         self._running.pop(workstream, None)
             await self.services.train.drain()
 
-    def _orphaned(self, graph: TaskGraph) -> tuple[WorkstreamId, ...]:
-        """Tasks left Running with nobody running them -- bounced and handed back."""
-        found: list[WorkstreamId] = []
-        for spec in graph.tasks:
-            state = self.services.projections.tasks.get(spec.task_id)
-            if not isinstance(state, Running):
-                continue
-            if state.workstream in self._running:
-                continue
-            if len(self._running) >= self.services.config.max_parallel:
-                break
-            found.append(state.workstream)
-        return tuple(found)
-
-    async def _relaunch(self, workstream_id: WorkstreamId) -> None:
-        """Re-run a worker in the worktree it already has, keeping its work."""
-        workstream = self.services.projections.workstreams.get(workstream_id)
-        sensor = self.sensors.get(workstream_id)
-        if workstream is None or sensor is None:
+    async def _ensure_worker(self, spec: TaskSpec, base: CommitSha) -> None:
+        """Give this task a worker, reusing the worktree it already has when it has one."""
+        state = self.services.projections.tasks.get(spec.task_id)
+        existing = getattr(state, "workstream", None)
+        sensor = self.sensors.get(existing) if existing else None
+        workstream = self.services.projections.workstreams.get(existing) if existing else None
+        if workstream is not None and sensor is not None and workstream.worktree.path.exists():
+            attempts = getattr(state, "attempts", 0)
+            self._running[workstream.workstream_id] = asyncio.create_task(
+                self._work(workstream, spec, sensor),
+                name=f"lj-worker-{workstream.workstream_id}-retry{attempts}",
+            )
             return
-        state = self.services.projections.tasks.get(workstream.task)
-        if not isinstance(state, Running):
-            return
-        self._running[workstream_id] = asyncio.create_task(
-            self._work(workstream, state.spec, sensor),
-            name=f"lj-worker-{workstream_id}-retry{state.attempts}",
-        )
+        await self._launch(spec, base)
 
     def _already_handled(self, task_id: TaskId) -> bool:
+        """Whether this task needs no worker started for it.
+
+        "Not pending" was the wrong test. It is true of every task a previous session
+        left behind, so resuming a stand skipped all of them and did nothing at all.
+        What actually matters is whether the work is finished, or whether *this*
+        process already has a worker on it.
+        """
         state = self.services.projections.tasks.get(task_id)
-        return state is not None and not isinstance(state, Pending)
+        if state is None:
+            return False
+        if isinstance(state, Landed | Abandoned):
+            return True
+        if isinstance(state, AwaitingIntegration):
+            return True  # the train owns it; see _requeue_landings
+        workstream = getattr(state, "workstream", None)
+        return workstream in self._running
 
     def _all_terminal(self, graph: TaskGraph) -> bool:
         return all(

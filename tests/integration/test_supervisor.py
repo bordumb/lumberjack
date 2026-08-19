@@ -10,8 +10,9 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from lumberjack.agents.outputs import Plan
 from lumberjack.core.services import Services
 from lumberjack.core.supervisor import Supervisor
+from lumberjack.domain.events import TaskPlanned
 from lumberjack.domain.task import Landed, TaskSpec
-from lumberjack.ids import TaskId
+from lumberjack.ids import AgentId, CommitSha, TaskId, WorkstreamId
 
 
 def _turns(messages: list[ModelMessage]) -> int:
@@ -209,3 +210,48 @@ async def test_a_bounced_task_is_run_again_rather_than_orphaned(
     assert all(count > 1 for count in attempts.values()), (
         f"each task should have been re-run after bouncing, got {attempts}"
     )
+
+
+async def test_resuming_picks_up_work_a_previous_session_left(services: Services) -> None:
+    """The bug that made Continue do nothing.
+
+    Every task a paused session leaves behind is in some state other than pending, so
+    a scheduler that treats "not pending" as "already handled" skips all of them and
+    the resumed run finishes instantly having done nothing.
+    """
+    from lumberjack.core.tasks import record_transition
+    from lumberjack.domain.task import Pending
+
+    supervisor = Supervisor(services=services)
+    spec = a_plan().tasks[0]
+    await services.ledger.append(TaskPlanned(spec=spec))
+    services.projections.tasks[spec.task_id] = Pending(spec=spec)
+
+    running = (
+        Pending(spec=spec)
+        .assign(AgentId("agent-x"), WorkstreamId("ws-x"))
+        .start(services.clock.now())
+    )
+    await record_transition(services.ledger, services.projections, running)
+
+    # No worker for it in this process, so it is work waiting to be picked up.
+    assert supervisor._already_handled(spec.task_id) is False
+
+
+async def test_finished_work_is_not_picked_up_again(services: Services) -> None:
+    from lumberjack.core.tasks import record_transition
+    from lumberjack.domain.task import Pending
+
+    supervisor = Supervisor(services=services)
+    spec = a_plan().tasks[0]
+    await services.ledger.append(TaskPlanned(spec=spec))
+    landed = (
+        Pending(spec=spec)
+        .assign(AgentId("agent-x"), WorkstreamId("ws-x"))
+        .start(services.clock.now())
+        .submit(CommitSha("a" * 7))
+        .land(CommitSha("b" * 7), services.clock.now())
+    )
+    await record_transition(services.ledger, services.projections, landed)
+
+    assert supervisor._already_handled(spec.task_id) is True
