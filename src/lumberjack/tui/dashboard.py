@@ -165,6 +165,14 @@ class Dashboard(App[None]):
         note = render.LIFECYCLE_NOTE.get(lifecycle)
         if note is not None:
             heading.append(f"\n{note}", style="yellow")
+        # A component that gave up belongs in the headline rather than a tab: it changes
+        # how every pane below should be read, including the ones that look reassuring.
+        stopped = state.stopped_components()
+        if stopped:
+            names = ", ".join(sorted(failure.component for failure in stopped))
+            heading.append(
+                f"\ndegraded: {names} stopped -- their panes are stale", style="bold red"
+            )
         return heading
 
     def _paint_workstreams(self) -> None:

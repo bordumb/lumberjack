@@ -44,6 +44,7 @@ from lumberjack.domain.events import (
     ChannelClosed,
     ChannelOpened,
     ClaimRequested,
+    ComponentFailed,
     ConflictCleared,
     ConflictDetected,
     ContractFrozen,
@@ -79,7 +80,7 @@ from lumberjack.domain.note import Note, ReviewComment
 from lumberjack.domain.request import ModelChoice
 from lumberjack.domain.task import TaskGraph
 from lumberjack.domain.vcs import MergeOutcome
-from lumberjack.domain.workstream import ArbitrationMode
+from lumberjack.domain.workstream import ArbitrationMode, PreservedWorktree
 from lumberjack.ids import CommitSha, ConflictId, RepoPath, StandId, TaskId, WorkstreamId
 
 if TYPE_CHECKING:
@@ -107,6 +108,8 @@ __all__ = [
     "conflicts_view",
     "coordination_unavailable",
     "counters_line",
+    "degraded_json",
+    "degraded_view",
     "deletion_plan",
     "exit_code_for",
     "feed_line",
@@ -121,6 +124,7 @@ __all__ = [
     "outcome_report",
     "plain_feed_line",
     "plan_view",
+    "preserved_report",
     "progress_rows",
     "progress_table",
     "promote_report",
@@ -278,6 +282,11 @@ def feed_line(envelope: Envelope[EventPayload]) -> FeedLine | None:
             return FeedLine(at, "dim", f"renamed to {payload.name!r}")
         case StandHalted():
             return FeedLine(at, "bold red", f"halted: {payload.reason}")
+        case ComponentFailed():
+            # A component that keeps retrying is a warning; one that gave up is the
+            # reason the rest of the screen has stopped making sense.
+            style = "bold red" if payload.giving_up else "yellow"
+            return FeedLine(at, style, payload.summary())
         case TaskPlanned():
             return FeedLine(at, "dim", f"planned {payload.spec.task_id}: {payload.spec.title}")
         case TaskAssigned():
@@ -559,11 +568,8 @@ def outcome_report(
                 style="dim",
             )
         )
-    if outcome.preserved_worktrees:
-        kept = Text("preserved worktrees (unlanded work):", style="yellow")
-        for path in outcome.preserved_worktrees:
-            kept.append(f"\n  {path}", style="dim")
-        parts.append(kept)
+    # Which worktrees survive, and why, is decided by teardown -- after this report is
+    # built.  :func:`preserved_report` says it once the stand has actually closed.
     return Group(*parts)
 
 
@@ -572,6 +578,41 @@ def exit_code_for(outcome: StandOutcome) -> ExitCode:
     if outcome.status == "completed" and not outcome.blocked:
         return ExitCode.OK
     return ExitCode.PARTIAL
+
+
+PRESERVED_HEADING: Mapping[str, str] = {
+    "unlanded": "preserved worktrees (unlanded work)",
+    "halted": "preserved worktrees (the stand halted)",
+    "cleanup_failed": "worktrees left behind -- removal failed, delete these by hand",
+}
+
+PRESERVED_STYLE: Mapping[str, str] = {
+    "unlanded": "yellow",
+    "halted": "yellow",
+    "cleanup_failed": "bold red",
+}
+
+
+def preserved_report(preserved: Sequence[PreservedWorktree]) -> RenderableType | None:
+    """Worktrees still on disk after teardown, grouped by *why* they are still there.
+
+    "Kept because it holds work that never landed" is the harness behaving; "kept
+    because removing it failed" is a directory the operator now owns.  One heading over
+    both is how the second stayed invisible, so each reason gets its own, and the
+    failures are red because they are the only ones that ask for action.
+    """
+    if not preserved:
+        return None
+    parts: list[RenderableType] = []
+    for reason in ("cleanup_failed", "unlanded", "halted"):
+        group = [item for item in preserved if item.reason == reason]
+        if not group:
+            continue
+        block = Text(f"{PRESERVED_HEADING[reason]}:", style=PRESERVED_STYLE[reason])
+        for item in group:
+            block.append(f"\n  {item.render()}", style="dim")
+        parts.append(block)
+    return Group(*parts)
 
 
 # -- ``lj status`` ---------------------------------------------------------------------
@@ -611,8 +652,13 @@ def status_view(
         heading.append("  (nothing has landed yet)", style="yellow")
 
     rows = progress_rows(projections, present=present, usage=usage)
-    parts: list[RenderableType] = [
-        heading,
+    parts: list[RenderableType] = [heading]
+    # Above the workstreams, not below them: a stand whose oracle has stopped renders
+    # an empty conflicts table, and that reads as "all clear" unless it says otherwise.
+    failures = degraded_view(projections)
+    if failures is not None:
+        parts.append(failures)
+    parts += [
         Text(f"\nworkstreams ({len(rows)})", style="bold"),
         progress_table(rows),
         Text(f"leases ({len(projections.active_leases(now))})", style="bold"),
@@ -624,6 +670,62 @@ def status_view(
     if entries:
         parts.extend([Text("merge train", style="bold"), train_table(entries)])
     return Group(*parts)
+
+
+def degraded_view(projections: Projections) -> RenderableType | None:
+    """The parts of the harness that are failing, or ``None`` when none are.
+
+    A stand whose oracle raises on every probe stops detecting conflicts and otherwise
+    looks exactly like a healthy one: same lanes, same empty conflict table.  This is
+    the pane that tells the difference, so it leads rather than trails.
+    """
+    failures = tuple(failure for _, failure in sorted(projections.degraded.items()))
+    if not failures:
+        return None
+    table = Table(box=box.SIMPLE, expand=True, pad_edge=False)
+    table.add_column("component", no_wrap=True)
+    table.add_column("state", no_wrap=True)
+    table.add_column("last error", overflow="ellipsis")
+    for failure in failures:
+        style = "bold red" if failure.giving_up else "yellow"
+        state = "stopped" if failure.giving_up else f"retrying ({failure.consecutive})"
+        table.add_row(
+            Text(failure.component, style=style),
+            Text(state, style=style),
+            Text(clip(failure.error, 70), style="dim"),
+        )
+    stopped = [failure for failure in failures if failure.giving_up]
+    heading = Text("degraded components", style="bold red" if stopped else "bold yellow")
+    if stopped:
+        heading.append(
+            "\nwhat these components report has stopped updating; the rest of this"
+            " view is only as current as they were",
+            style="red",
+        )
+    refs = [failure.traceback_ref for failure in failures if failure.traceback_ref]
+    parts: list[RenderableType] = [heading, table]
+    if refs:
+        # The event carries a one-line reason; the artifact carries the traceback.
+        trail = Text("tracebacks:", style="dim")
+        for ref in refs:
+            trail.append(f"\n  {ref}", style="dim")
+        parts.append(trail)
+    return Group(*parts)
+
+
+def degraded_json(projections: Projections) -> list[dict[str, Any]]:
+    """:func:`degraded_view` for scripts, identifiers and refs left whole."""
+    return [
+        {
+            "component": failure.component,
+            "error": failure.error,
+            "consecutive": failure.consecutive,
+            "giving_up": failure.giving_up,
+            "traceback_ref": failure.traceback_ref,
+            "workstream": str(failure.workstream) if failure.workstream else None,
+        }
+        for _, failure in sorted(projections.degraded.items())
+    ]
 
 
 def _lease_table(leases: Sequence[Lease]) -> Table:
@@ -688,6 +790,7 @@ def status_json(
             for lease in projections.active_leases(now)
         ],
         "conflicts": conflicts_json(projections),
+        "degraded": degraded_json(projections),
         "train": [
             {
                 "position": entry.position,

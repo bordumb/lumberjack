@@ -381,9 +381,23 @@ def run(
                 watcher.cancel()
                 await asyncio.gather(watcher, return_exceptions=True)
             out.emit(render.outcome_report(outcome, usage=_usage_total(stand.services)))
-            return render.exit_code_for(outcome)
+            code = render.exit_code_for(outcome)
+        _report_preserved(stand, out)
+        return code
 
     _run(go)
+
+
+def _report_preserved(stand: Stand, out: Output) -> None:
+    """Say which worktrees are still on disk, and why, once teardown has decided.
+
+    Only reachable after the stand has closed: until then "kept because its work never
+    landed" and "kept because removing it failed" are indistinguishable, and the second
+    is the one the operator has to do something about.
+    """
+    kept = render.preserved_report(stand.preserved_worktrees)
+    if kept is not None:
+        out.emit(kept)
 
 
 async def _tasks_of_stand(repo: Path, stand: StandId) -> tuple[TaskSpec, ...]:
@@ -693,6 +707,7 @@ def resume(*, repo: Path = Path(), stand: str | None = None) -> None:
             return ExitCode.NO_STAND
         finally:
             await opened.close()
+            _report_preserved(opened, out)
 
     _run(go)
 

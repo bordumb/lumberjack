@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from textual.widgets import DataTable
 
+from lumberjack.domain.events import ComponentFailed
 from lumberjack.ids import ConflictId, WorkstreamId
 from lumberjack.tui.dashboard import Dashboard
 
@@ -72,6 +73,21 @@ async def test_jumping_moves_to_a_workstream_in_the_conflict(recorded_stand):
 
         assert app.query_one("#workstreams", DataTable).cursor_row == 0
         assert app._selected_workstream() == WorkstreamId("ws-task-render")
+
+
+async def test_a_stopped_component_reaches_the_headline(recorded_stand):
+    """Every pane below a dead oracle is stale, so the warning cannot live in a tab."""
+    app = dashboard(recorded_stand)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.projections.degraded["oracle"] = ComponentFailed(
+            component="oracle", error="merge-tree exploded", consecutive=4, giving_up=True
+        )
+
+        headline = _text(app._headline("live"))
+
+    assert "degraded: oracle stopped" in headline
 
 
 async def test_the_train_and_the_heat_map_have_rows(recorded_stand):

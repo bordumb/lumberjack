@@ -26,6 +26,7 @@ from lumberjack.domain.claim import AccessMode, Claim, Lease, PathScope
 from lumberjack.domain.conflict import ConflictedFile, ConflictReport, ConflictSource, Severity
 from lumberjack.domain.events import (
     Bounced,
+    ComponentFailed,
     ConflictDetected,
     Envelope,
     LeaseGrantedEvent,
@@ -35,7 +36,7 @@ from lumberjack.domain.events import (
 from lumberjack.domain.gate import CheckOutcome, CheckResult, GateReport
 from lumberjack.domain.note import Note
 from lumberjack.domain.task import Landed, TaskSpec
-from lumberjack.domain.workstream import ArbitrationMode
+from lumberjack.domain.workstream import ArbitrationMode, PreservedWorktree
 from lumberjack.ids import (
     AgentId,
     CommitSha,
@@ -156,6 +157,15 @@ def test_landing_and_bouncing_both_show_up():
     assert "bounced" in line_for(bounced).text
 
 
+def test_a_component_giving_up_is_louder_in_the_feed_than_one_retrying():
+    retrying = ComponentFailed(component="oracle", error="merge-tree exploded", consecutive=2)
+    stopped = retrying.model_copy(update={"giving_up": True})
+
+    assert line_for(retrying).style == "yellow"
+    assert line_for(stopped).style == "bold red"
+    assert "stopped" in line_for(stopped).text
+
+
 def test_the_plain_form_is_one_line_with_a_timestamp():
     """`lj run > log.txt` has to stay readable; this is what a non-TTY gets."""
     plain = render.plain_feed_line(line_for(ConflictDetected(report=conflict())))
@@ -234,6 +244,31 @@ def test_the_outcome_says_nothing_about_tokens_when_usage_is_not_wired_up():
     assert "tokens" not in text_of(render.outcome_report(outcome("completed")))
 
 
+# -- worktrees that survive teardown ---------------------------------------------------
+
+
+def test_nothing_preserved_renders_nothing():
+    assert render.preserved_report(()) is None
+
+
+def test_a_failed_removal_is_not_reported_as_unlanded_work():
+    """One is the harness working; the other is a directory the operator now owns."""
+    report = render.preserved_report(
+        (
+            PreservedWorktree(path="/tmp/ws-a", reason="unlanded"),
+            PreservedWorktree(path="/tmp/ws-b", reason="cleanup_failed", detail="device busy"),
+        )
+    )
+    assert report is not None
+
+    body = text_of(report, width=100)
+
+    assert "delete these by hand" in body
+    assert "device busy" in body
+    unlanded = body.index("unlanded work")
+    assert body.index("delete these by hand") < unlanded, "the actionable list leads"
+
+
 # -- status ---------------------------------------------------------------------------
 
 
@@ -278,6 +313,63 @@ def test_status_json_keeps_identifiers_whole(recorded_stand):
         "ws-task-watch",
     ]
     assert document["integration"]["landed"] == 1
+
+
+def test_a_healthy_stand_shows_no_degraded_pane(recorded_stand):
+    repo, stand = recorded_stand
+    projections = hydrated(repo, stand)
+
+    assert render.degraded_view(projections) is None
+    assert render.status_json(projections, stand=stand, lifecycle="live", now=AT)["degraded"] == []
+
+
+def test_a_stopped_component_leads_the_status(recorded_stand):
+    """An oracle that died renders an empty conflict table, which reads as all clear."""
+    repo, stand = recorded_stand
+    projections = hydrated(repo, stand)
+    projections.degraded["oracle"] = ComponentFailed(
+        component="oracle",
+        error="git merge-tree exploded",
+        consecutive=5,
+        giving_up=True,
+        traceback_ref="artifacts/oracle-5.txt",
+    )
+
+    body = text_of(
+        render.status_view(projections, stand=stand, lifecycle="live", now=AT), width=120
+    )
+    document = render.status_json(projections, stand=stand, lifecycle="live", now=AT)
+
+    assert "degraded components" in body
+    assert "stopped" in body
+    assert "artifacts/oracle-5.txt" in body, "the traceback is one command away"
+    assert body.index("degraded components") < body.index("workstreams"), "it leads"
+    assert document["degraded"] == [
+        {
+            "component": "oracle",
+            "error": "git merge-tree exploded",
+            "consecutive": 5,
+            "giving_up": True,
+            "traceback_ref": "artifacts/oracle-5.txt",
+            "workstream": None,
+        }
+    ]
+
+
+def test_a_component_still_retrying_is_a_warning_not_a_stop(recorded_stand):
+    repo, stand = recorded_stand
+    projections = hydrated(repo, stand)
+    projections.degraded["sensor"] = ComponentFailed(
+        component="sensor", error="slow", consecutive=2
+    )
+
+    pane = render.degraded_view(projections)
+    assert pane is not None
+
+    body = text_of(pane, width=120)
+
+    assert "retrying (2)" in body
+    assert "stopped updating" not in body
 
 
 def test_a_table_truncates_an_id_but_the_document_does_not(recorded_stand):
