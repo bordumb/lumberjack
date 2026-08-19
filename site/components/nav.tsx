@@ -10,11 +10,13 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  Settings,
   X,
 } from "lucide-react";
 import { AddRepo } from "@/components/add-repo";
 import { notifyReposChanged, useReposChanged } from "@/lib/repos-changed";
 import { NewRun } from "@/components/new-run";
+import { SettingsModal } from "@/components/settings-modal";
 import { cn } from "@/lib/utils";
 
 type Repo = { path: string; name: string; addedAt: number };
@@ -52,6 +54,7 @@ export function Nav() {
   const [adding, setAdding] = useState(false);
   const [newRunFor, setNewRunFor] = useState<Repo | null>(null);
   const [removing, setRemoving] = useState<Repo | null>(null);
+  const [settings, setSettings] = useState(false);
 
   /**
    * Removing a project unregisters it and touches nothing on disk.
@@ -177,12 +180,22 @@ export function Nav() {
             </Link>
           ))}
         </div>
+        <button
+          type="button"
+          onClick={() => setSettings(true)}
+          aria-label="settings"
+          title="Settings"
+          className="mt-auto rounded-md p-1.5 text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+        >
+          <Settings className="h-4 w-4" />
+        </button>
         {adding && (
           <AddRepo
             onClose={() => setAdding(false)}
             onAdded={() => undefined}
           />
         )}
+        {settings && <SettingsModal onClose={() => setSettings(false)} />}
       </nav>
     );
   }
@@ -327,11 +340,20 @@ export function Nav() {
         })}
       </div>
 
-      <footer className="border-t border-border/60 px-3 py-2">
+      <footer className="flex items-center gap-1.5 border-t border-border/60 py-2 pl-3 pr-2">
         <span className="flex items-center gap-1.5 font-mono text-[10.5px] text-muted-foreground/60">
           <Layers className="h-3 w-3" />
           lumberjack
         </span>
+        <button
+          type="button"
+          onClick={() => setSettings(true)}
+          aria-label="settings"
+          title="Settings"
+          className="ml-auto rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+        >
+          <Settings className="h-3.5 w-3.5" />
+        </button>
       </footer>
 
       {adding && (
@@ -351,6 +373,7 @@ export function Nav() {
           }}
         />
       )}
+      {settings && <SettingsModal onClose={() => setSettings(false)} />}
     </nav>
   );
 }

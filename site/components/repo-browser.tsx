@@ -7,6 +7,8 @@ import { FileCode2, GitBranch } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { TokenHoverCard, useTokenHover } from "@/components/token-hover";
 import type { SymbolInfo } from "@/components/token-hover";
+import { useTheme } from "@/components/theme-provider";
+import { CODE_THEME } from "@/lib/theme";
 
 type Info = { name: string; root: string; branch: string; head: string; fileCount: number };
 type Tree = {
@@ -25,6 +27,7 @@ export function RepoBrowser({ repo }: { repo: string | null }) {
   const [contents, setContents] = useState<string | null>(null);
   const [symbols, setSymbols] = useState<Record<string, SymbolInfo>>({});
   const { hovered, onTokenEnter, onTokenLeave } = useTokenHover(symbols);
+  const { theme } = useTheme();
 
   useEffect(() => {
     // A 404 here means the project was removed. Holding the last good response in
@@ -146,7 +149,12 @@ export function RepoBrowser({ repo }: { repo: string | null }) {
               ) : (
                 <File
                   file={{ name: selected, contents }}
-                  options={{ theme: "pierre-dark", onTokenEnter, onTokenLeave }}
+                  options={{
+                    theme: CODE_THEME,
+                    themeType: theme,
+                    onTokenEnter,
+                    onTokenLeave,
+                  }}
                 />
               )}
             </div>

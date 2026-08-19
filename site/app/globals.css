@@ -49,6 +49,9 @@
 }
 
 :root {
+  /* Native chrome -- scrollbars, form controls, over-scroll -- follows this, not the
+     tokens below. The toggle sets it inline too, for the paint before the CSS lands. */
+  color-scheme: light;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -84,6 +87,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
