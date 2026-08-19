@@ -33,6 +33,11 @@ one thing here that cannot be recomputed from git or from a ledger.
 
 Two sources, no daemon and no writes:
 
+- **the working tree on disk**, walked directly rather than read from `git ls-files`.
+  Ignored paths are included and marked ignored, not omitted: `.venv` and `.lumberjack`
+  are gitignored by definition, and `.lumberjack` is where the runs live, so a tree that
+  hides them is useless for inspecting one by hand. Only `.git` and `node_modules` are
+  skipped — object storage and 30,000 files nobody browses.
 - **`<repo>/.lumberjack/<stand>/ledger.db`** — the append-only event log, read through Node 22's
   built-in `node:sqlite` (so there is no native dependency to build). Every metric on the
   dashboard is a fold over these events, the same way `lj status` computes them.

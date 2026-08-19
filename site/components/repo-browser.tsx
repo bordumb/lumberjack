@@ -9,7 +9,11 @@ import { TokenHoverCard, useTokenHover } from "@/components/token-hover";
 import type { SymbolInfo } from "@/components/token-hover";
 
 type Info = { name: string; root: string; branch: string; head: string; fileCount: number };
-type Tree = { paths: string[]; gitStatus: { path: string; status: string }[] };
+type Tree = {
+  paths: string[];
+  gitStatus: { path: string; status: string }[];
+  truncated?: boolean;
+};
 
 export function RepoBrowser({ repo }: { repo: string | null }) {
   const query = repo ? `?repo=${encodeURIComponent(repo)}` : "";
@@ -81,7 +85,9 @@ export function RepoBrowser({ repo }: { repo: string | null }) {
               {info.branch}
             </Badge>
             <span className="font-mono text-[11px] text-muted-foreground">
-              {info.head} · {info.fileCount} files
+              {info.head} · {info.fileCount} tracked
+              {tree ? ` · ${tree.paths.length} on disk` : ""}
+              {tree?.truncated ? " (truncated)" : ""}
             </span>
             <span className="ml-auto truncate font-mono text-[11px] text-muted-foreground/60">
               {info.root}

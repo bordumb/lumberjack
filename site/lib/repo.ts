@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { readdirSync } from "node:fs";
+import type { Dirent } from "node:fs";
 import { promisify } from "node:util";
 import path from "node:path";
 import { DEFAULT_REPO } from "./repos";
@@ -17,9 +19,20 @@ export type RepoInfo = {
 export type RepoTree = {
   paths: string[];
   gitStatus: { path: string; status: GitStatusName }[];
+  truncated?: boolean;
 };
 
-type GitStatusName = "added" | "deleted" | "modified" | "renamed" | "untracked";
+type GitStatusName = "added" | "deleted" | "ignored" | "modified" | "renamed" | "untracked";
+
+/**
+ * Only two things are hidden from the tree, and neither is a judgement about what
+ * matters: `.git` is object storage rather than source, and `node_modules` is 30,000
+ * files nobody browses. Everything else appears -- `.lumberjack` above all, since
+ * inspecting a run by hand is the whole reason to have a file view here.
+ */
+const NEVER_WALK = new Set([".git", "node_modules"]);
+
+const MAX_ENTRIES = 40_000;
 
 const PORCELAIN: Record<string, GitStatusName> = {
   M: "modified",
@@ -57,20 +70,48 @@ export async function repoInfo(repo: string = DEFAULT_REPO): Promise<RepoInfo> {
  * it -- shown through git status decorations rather than silently folded in with the
  * committed ones.
  */
+/**
+ * The working tree as it exists on disk, not as git indexes it.
+ *
+ * Reading `git ls-files` was the obvious first implementation and the wrong one: it
+ * omits everything gitignored, which is exactly where a Python project keeps `.venv`
+ * and where this harness keeps `.lumberjack`. Ignored paths are included and marked,
+ * so they read as ignored rather than being absent.
+ */
 export async function repoTree(repo: string = DEFAULT_REPO): Promise<RepoTree> {
-  const [tracked, status] = await Promise.all([
-    git(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard"),
+  const [status, ignored] = await Promise.all([
     git(repo, "status", "--porcelain", "-z").catch(() => ""),
+    git(repo, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory")
+      .catch(() => ""),
   ]);
 
-  const files = tracked.split("\0").filter(Boolean).sort();
-  const directories = new Set<string>();
-  for (const file of files) {
-    const parts = file.split("/");
-    for (let depth = 1; depth < parts.length; depth += 1) {
-      directories.add(`${parts.slice(0, depth).join("/")}/`);
+  const paths: string[] = [];
+  const walk = (relative: string): void => {
+    if (paths.length > MAX_ENTRIES) return;
+    let entries: Dirent[] = [];
+    try {
+      entries = readdirSync(path.join(repo, relative), { withFileTypes: true });
+    } catch {
+      return;
     }
-  }
+    for (const entry of entries) {
+      if (NEVER_WALK.has(entry.name)) continue;
+      const child = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        paths.push(`${child}/`);
+        walk(child);
+      } else if (entry.isFile() || entry.isSymbolicLink()) {
+        paths.push(child);
+      }
+    }
+  };
+  walk("");
+
+  const ignoredPrefixes = ignored.split("\0").filter(Boolean);
+  const isIgnored = (file: string): boolean =>
+    ignoredPrefixes.some((prefix) =>
+      prefix.endsWith("/") ? file.startsWith(prefix) : file === prefix,
+    );
 
   const gitStatus: RepoTree["gitStatus"] = [];
   for (const record of status.split("\0")) {
@@ -80,8 +121,13 @@ export async function repoTree(repo: string = DEFAULT_REPO): Promise<RepoTree> {
     const name = PORCELAIN[code];
     if (name && file) gitStatus.push({ path: file, status: name });
   }
+  // Mark the ignored directories themselves rather than every file beneath them: the
+  // tree dims a folder and its contents follow, and 8,000 entries do not need rows.
+  for (const prefix of ignoredPrefixes) {
+    gitStatus.push({ path: prefix.replace(/\/$/, ""), status: "ignored" });
+  }
 
-  return { paths: [...directories, ...files].sort(), gitStatus };
+  return { paths: paths.sort(), gitStatus, truncated: paths.length > MAX_ENTRIES };
 }
 
 export async function readRepoFile(

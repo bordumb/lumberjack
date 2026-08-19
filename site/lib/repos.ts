@@ -84,7 +84,8 @@ export function browse(at: string | null): { cwd: string; parent: string | null;
   let names: string[] = [];
   try {
     names = readdirSync(cwd, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      // Dotfolders are shown here as well; a repository can live inside one.
+      .filter((entry) => entry.isDirectory() && entry.name !== ".git")
       .map((entry) => entry.name)
       .sort();
   } catch {
