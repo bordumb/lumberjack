@@ -2,7 +2,14 @@ import { DatabaseSync } from "node:sqlite";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import type { Conflict, Lifecycle, StandSnapshot, Workstream } from "./types";
+import type {
+  CommentStatus,
+  Conflict,
+  Lifecycle,
+  ReviewComment,
+  StandSnapshot,
+  Workstream,
+} from "./types";
 
 /** The repository root: the dashboard lives in `site/` inside it. */
 export const REPO = path.resolve(process.env.LUMBERJACK_REPO ?? path.join(process.cwd(), ".."));
@@ -67,6 +74,8 @@ export function snapshot(stand: string): StandSnapshot | null {
   const conflicts = new Map<string, Conflict>();
   const leases = new Map<string, { workstream: string; mode: string; scope: string }>();
   const notes: StandSnapshot["notes"] = [];
+  const comments = new Map<string, ReviewComment>();
+  const awarenessAt = new Map<string, number>();
   const eventCounts: Record<string, number> = {};
 
   let goal = "";
@@ -172,6 +181,48 @@ export function snapshot(stand: string): StandSnapshot | null {
       case "note_posted":
         notes.push({ author: p.note.author, topic: p.note.topic, body: p.note.body, at });
         break;
+      case "review_comment_posted": {
+        const c = p.comment;
+        comments.set(c.comment_id, {
+          id: c.comment_id,
+          author: c.author,
+          body: c.body,
+          file: c.file,
+          lineStart: c.line_start,
+          lineEnd: c.line_end,
+          side: c.side,
+          workstream: c.workstream ?? null,
+          conflictId: c.conflict_id ?? null,
+          postedAt: Date.parse(c.posted_at),
+          resolved: false,
+          notified: p.notified ?? [],
+          status: "queued",
+          replies: [],
+        });
+        break;
+      }
+      case "review_comment_resolved": {
+        const existing = comments.get(p.comment_id);
+        if (existing) comments.set(p.comment_id, { ...existing, resolved: true });
+        break;
+      }
+      case "message_sent": {
+        // An agent answering a review comment is a reply, not chatter.
+        const message = p.message;
+        for (const comment of comments.values()) {
+          if (
+            comment.notified.includes(message.frm) &&
+            at >= comment.postedAt &&
+            message.subject.includes(comment.file)
+          ) {
+            comment.replies.push({ frm: message.frm, body: message.body, at });
+          }
+        }
+        break;
+      }
+      case "message_read":
+        awarenessAt.set(String(row.actor), at);
+        break;
     }
   }
 
@@ -184,6 +235,13 @@ export function snapshot(stand: string): StandSnapshot | null {
       const w = workstreams.get(id);
       if (w) w.conflicts += 1;
     }
+  }
+
+  // The status ladder is read from what happened, never assumed: an agent has seen a
+  // comment when it actually read its inbox, and has addressed it when its next delta
+  // touched the file.
+  for (const comment of comments.values()) {
+    comment.status = statusOf(comment, workstreams, awarenessAt);
   }
 
   const list = [...workstreams.values()];
@@ -203,9 +261,26 @@ export function snapshot(stand: string): StandSnapshot | null {
     workstreams: list,
     conflicts: [...conflicts.values()],
     notes: notes.slice(-20).reverse(),
+    comments: [...comments.values()],
     eventCounts,
     totalEvents: rows.length,
   };
+}
+
+function statusOf(
+  comment: ReviewComment,
+  workstreams: Map<string, Workstream>,
+  awarenessAt: Map<string, number>,
+): CommentStatus {
+  if (comment.resolved) return "resolved";
+  const owner = comment.workstream ? workstreams.get(comment.workstream) : undefined;
+  const touchedSince =
+    owner && (owner.lastActivity ?? 0) > comment.postedAt && owner.filesTouched > 0;
+  if (touchedSince) return "addressed";
+  const seen = comment.notified.some(
+    (agent) => (awarenessAt.get(agent) ?? 0) >= comment.postedAt,
+  );
+  return seen ? "delivered" : "queued";
 }
 
 function describeScope(scope: { kind: string; patterns?: string[]; symbols?: { module: string; qualname: string }[] }): string {

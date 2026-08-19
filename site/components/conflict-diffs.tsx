@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { MultiFileDiff, UnresolvedFile } from "@pierre/diffs/react";
 import { ChevronRight, GitCompare } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { CommentCard, CommentComposer, CommentPin, useComments } from "@/components/comments";
+import type { Target } from "@/components/comments";
+import type { ReviewComment } from "@/lib/types";
 import { TokenHoverCard, useTokenHover } from "@/components/token-hover";
 import type { SymbolInfo } from "@/components/token-hover";
 import { cn } from "@/lib/utils";
@@ -45,6 +48,7 @@ const BASE_CONFLICT_OPTIONS = {
 export function ConflictDiffs({ conflict, stand }: { conflict: string; stand: string }) {
   const [data, setData] = useState<Payload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { comments, post, resolve } = useComments(stand);
 
   useEffect(() => {
     fetch(`/api/conflicts/${conflict}?stand=${stand}`)
@@ -77,6 +81,10 @@ export function ConflictDiffs({ conflict, stand }: { conflict: string; stand: st
           left={data.left}
           right={data.right}
           defaultOpen={index === 0}
+          conflict={conflict}
+          comments={comments.filter((item) => item.file === file.path)}
+          onComment={post}
+          onResolve={resolve}
         />
       ))}
     </div>
@@ -88,16 +96,48 @@ function FileConflict({
   left,
   right,
   defaultOpen,
+  conflict,
+  comments,
+  onComment,
+  onResolve,
 }: {
   file: ConflictFile;
   left: Side;
   right: Side;
   defaultOpen: boolean;
+  conflict: string;
+  comments: ReviewComment[];
+  onComment: (target: Target, body: string) => Promise<void>;
+  onResolve: (id: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const [pending, setPending] = useState<Target | null>(null);
+  const open_comments = comments.filter((item) => !item.resolved);
+  const annotations = comments.map((item) => ({
+    side: "additions" as const,
+    lineNumber: item.lineStart,
+    metadata: { comment: item },
+  }));
+  const selection = {
+    enableLineSelection: true,
+    onLineSelectionEnd(range: { start: number; end: number } | null) {
+      if (!range) return;
+      setPending({
+        file: file.path,
+        lineStart: Math.min(range.start, range.end),
+        lineEnd: Math.max(range.start, range.end),
+        conflict,
+      });
+    },
+  };
   const { hovered, onTokenEnter, onTokenLeave } = useTokenHover(file.symbols);
-  const diffOptions = { ...BASE_OPTIONS, onTokenEnter, onTokenLeave };
-  const conflictOptions = { ...BASE_CONFLICT_OPTIONS, onTokenEnter, onTokenLeave };
+  const diffOptions = { ...BASE_OPTIONS, onTokenEnter, onTokenLeave, ...selection };
+  const conflictOptions = { ...BASE_CONFLICT_OPTIONS, onTokenEnter, onTokenLeave, ...selection };
+  const renderComment = (annotation: { metadata: { comment: ReviewComment } }) => (
+    <div className="px-3 py-2">
+      <CommentCard comment={annotation.metadata.comment} onResolve={onResolve} />
+    </div>
+  );
   const sides = [
     { side: left, contents: file.ours, changed: file.oursChanged, label: "ours" },
     { side: right, contents: file.theirs, changed: file.theirsChanged, label: "theirs" },
@@ -114,7 +154,8 @@ function FileConflict({
         <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-90")} />
         <GitCompare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="truncate font-mono text-[12.5px]">{file.path}</span>
-        <span className="ml-auto flex shrink-0 gap-1.5">
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+          {open_comments.length > 0 && <CommentPin count={open_comments.length} />}
           {file.conflicted && (
             <Badge variant="outline" className="h-5 border-destructive/40 text-[10px] text-destructive">
               conflicted
@@ -133,6 +174,16 @@ function FileConflict({
         </span>
       </button>
 
+      {open && pending && (
+        <div className="border-t border-border/60 p-3">
+          <CommentComposer
+            target={pending}
+            onSubmit={(body) => onComment(pending, body)}
+            onCancel={() => setPending(null)}
+          />
+        </div>
+      )}
+
       {open && file.conflicted && (
         <div className="border-t border-border/60 p-3">
           <p className="mb-2 text-[11.5px] text-muted-foreground">
@@ -143,6 +194,8 @@ function FileConflict({
             <UnresolvedFile
               file={{ name: file.path, contents: file.merged }}
               options={conflictOptions}
+              lineAnnotations={annotations}
+              renderAnnotation={renderComment}
             />
           </div>
         </div>
@@ -174,6 +227,8 @@ function FileConflict({
                   oldFile={{ name: file.path, contents: file.base }}
                   newFile={{ name: file.path, contents }}
                   options={diffOptions}
+                  lineAnnotations={annotations}
+                  renderAnnotation={renderComment}
                 />
               </div>
             </section>

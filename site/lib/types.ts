@@ -28,6 +28,25 @@ export type Conflict = {
   evidence: string;
 };
 
+export type CommentStatus = "queued" | "delivered" | "addressed" | "resolved";
+
+export type ReviewComment = {
+  id: string;
+  author: string;
+  body: string;
+  file: string;
+  lineStart: number;
+  lineEnd: number;
+  side: string;
+  workstream: string | null;
+  conflictId: string | null;
+  postedAt: number;
+  resolved: boolean;
+  notified: string[];
+  status: CommentStatus;
+  replies: { frm: string; body: string; at: number }[];
+};
+
 export type StandSnapshot = {
   stand: string;
   goal: string;
@@ -38,6 +57,7 @@ export type StandSnapshot = {
   workstreams: Workstream[];
   conflicts: Conflict[];
   notes: { author: string; topic: string; body: string; at: number }[];
+  comments: ReviewComment[];
   eventCounts: Record<string, number>;
   totalEvents: number;
 };

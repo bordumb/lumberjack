@@ -6,6 +6,9 @@ import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TokenHoverCard, useTokenHover } from "@/components/token-hover";
 import type { SymbolInfo } from "@/components/token-hover";
+import type { ReviewComment } from "@/lib/types";
+
+type CommentMetadata = { comment: ReviewComment };
 
 const COLLAPSE_OVER = 5;
 const COLLAPSED_HEIGHT = "9rem";
@@ -28,12 +31,18 @@ export function CodeSnippet({
   language = "text",
   target = "",
   symbols,
+  annotations,
+  renderAnnotation,
+  onSelectLines,
 }: {
   code: string;
   before?: string | null;
   language?: string;
   target?: string;
   symbols?: Record<string, SymbolInfo>;
+  annotations?: { side: "additions"; lineNumber: number; metadata: CommentMetadata }[];
+  renderAnnotation?: (annotation: { metadata: CommentMetadata }) => React.ReactNode;
+  onSelectLines?: (range: { start: number; end: number }) => void;
 }) {
   const contents = code.replace(/\s+$/, "");
   const lines = contents.split("\n").length + (before ? before.split("\n").length : 0);
@@ -47,6 +56,16 @@ export function CodeSnippet({
     diffStyle: "split",
     onTokenEnter,
     onTokenLeave,
+    // Selection is only offered where a comment can mean something: a snippet with a
+    // real path behind it. Commenting on a shell command has nowhere to land.
+    ...(onSelectLines
+      ? {
+          enableLineSelection: true,
+          onLineSelectionEnd(range: { start: number; end: number } | null) {
+            if (range) onSelectLines(range);
+          },
+        }
+      : {}),
   } as const;
 
   // The surrounding row already names the file and the tool. A second header inside
@@ -78,10 +97,18 @@ export function CodeSnippet({
             oldFile={{ name, contents: before }}
             newFile={{ name, contents }}
             options={options}
+            lineAnnotations={annotations}
+            renderAnnotation={renderAnnotation}
             renderCustomHeader={noHeader}
           />
         ) : (
-          <File file={{ name, contents }} options={options} renderCustomHeader={noHeader} />
+          <File
+            file={{ name, contents }}
+            options={options}
+            lineAnnotations={annotations}
+            renderAnnotation={renderAnnotation}
+            renderCustomHeader={noHeader}
+          />
         )}
         {!open && (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background to-transparent" />

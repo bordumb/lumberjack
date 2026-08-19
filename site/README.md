@@ -61,6 +61,31 @@ signature, the kind, the line, and the file it comes from. Definitions are index
 repo-wide from one `git grep`, because the names you most want explained are the ones a
 file *imports*, and those are never defined in front of you.
 
+## Leaving review comments
+
+Select lines in any diff or snippet, on either page, and a composer opens. The comment
+is not a note on a screen:
+
+- it is **addressed** — on an agent page to that agent, on a conflict page to both
+  participants, because a conflict is a dispute and telling one side is telling nobody;
+- it **leads the agent's awareness digest**, above peers and open conflicts;
+- it **blocks that work from landing** until it is resolved, which the merge train
+  enforces rather than the UI.
+
+The status on each comment is read from what actually happened -- `queued` until the
+agent reads its inbox, `delivered` once it has, `addressed` when its next delta touches
+the file, `resolved` when you close it. None of it is assumed.
+
+Posting shells out to `lj comment` rather than writing the ledger from the dashboard:
+the event shape and the routing rule live in the Python domain, and a second copy here
+would drift. The same commands work from a terminal:
+
+```bash
+uv run lj comment "this drops the error" --file pkg/core.py --line 12 --workstream ws-abc
+uv run lj comments
+uv run lj resolve comment-abc123
+```
+
 ## Configuration
 
 `LUMBERJACK_REPO` overrides the repository root, which otherwise defaults to the parent of

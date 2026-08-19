@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { CodeSnippet } from "@/components/code-snippet";
+import { CommentCard, CommentComposer, useComments } from "@/components/comments";
+import type { Target } from "@/components/comments";
+import type { ReviewComment } from "@/lib/types";
 import type { SymbolInfo } from "@/components/token-hover";
 import { isCoordination, toolIcon } from "@/components/tool-icon";
 import { cn } from "@/lib/utils";
@@ -16,6 +19,8 @@ function time(at: number | null): string {
 export function LogStream({ workstream, stand }: { workstream: string; stand: string }) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [symbols, setSymbols] = useState<Record<string, SymbolInfo>>({});
+  const [pending, setPending] = useState<Target | null>(null);
+  const { comments, post, resolve } = useComments(stand);
   const [agent, setAgent] = useState<Workstream | null>(null);
   const [follow, setFollow] = useState(true);
   const bottom = useRef<HTMLDivElement>(null);
@@ -78,9 +83,25 @@ export function LogStream({ workstream, stand }: { workstream: string; stand: st
             entry={entry}
             symbols={symbols}
             answers={entries[index - 1]?.tool}
+            comments={comments}
+            workstream={workstream}
+            onSelect={setPending}
+            onResolve={resolve}
           />
         ))}
         <div ref={bottom} />
+      </div>
+
+      {pending && (
+        <div className="border-t border-border/60 pt-3">
+          <CommentComposer
+            target={pending}
+            onSubmit={(body) => post(pending, body)}
+            onCancel={() => setPending(null)}
+          />
+        </div>
+      )}
+      <div className="hidden">
       </div>
     </div>
   );
@@ -90,11 +111,41 @@ function Entry({
   entry,
   symbols,
   answers,
+  comments,
+  workstream,
+  onSelect,
+  onResolve,
 }: {
   entry: LogEntry;
   symbols: Record<string, SymbolInfo>;
   answers?: LogEntry["tool"];
+  comments: ReviewComment[];
+  workstream: string;
+  onSelect: (target: Target) => void;
+  onResolve: (id: string) => Promise<void>;
 }) {
+  const path = entry.tool?.target ?? answers?.target ?? "";
+  const commentable = /\.[A-Za-z0-9]+$/.test(path);
+  const mine = comments.filter((item) => item.file === path);
+  const annotations = mine.map((item) => ({
+    side: "additions" as const,
+    lineNumber: item.lineStart,
+    metadata: { comment: item },
+  }));
+  const renderComment = (annotation: { metadata: { comment: ReviewComment } }) => (
+    <div className="px-3 py-2">
+      <CommentCard comment={annotation.metadata.comment} onResolve={onResolve} />
+    </div>
+  );
+  const selectHandler = commentable
+    ? (range: { start: number; end: number }) =>
+        onSelect({
+          file: path,
+          lineStart: Math.min(range.start, range.end),
+          lineEnd: Math.max(range.start, range.end),
+          workstream,
+        })
+    : undefined;
   if (entry.tool) {
     const Icon = toolIcon(entry.tool.label);
     const coordination = isCoordination(entry.tool.label);
@@ -123,6 +174,9 @@ function Entry({
             language={entry.tool.language}
             target={entry.tool.target}
             symbols={symbols}
+            annotations={annotations}
+            renderAnnotation={renderComment}
+            onSelectLines={selectHandler}
           />
         )}
       </div>
@@ -148,6 +202,9 @@ function Entry({
           language={answers?.language ?? "text"}
           target={answers?.target ?? ""}
           symbols={symbols}
+          annotations={annotations}
+          renderAnnotation={renderComment}
+          onSelectLines={selectHandler}
         />
       </div>
     );
