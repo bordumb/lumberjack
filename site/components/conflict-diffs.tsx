@@ -2,11 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { MultiFileDiff, UnresolvedFile } from "@pierre/diffs/react";
+import { GutterAdd } from "@/components/gutter-add";
 import { ChevronRight, GitCompare } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { CommentCard, CommentComposer, CommentPin, useComments } from "@/components/comments";
 import type { Target } from "@/components/comments";
 import type { ReviewComment } from "@/lib/types";
+
+type Anno = { comment?: ReviewComment; compose?: Target };
 import { TokenHoverCard, useTokenHover } from "@/components/token-hover";
 import type { SymbolInfo } from "@/components/token-hover";
 import { cn } from "@/lib/utils";
@@ -113,30 +116,67 @@ function FileConflict({
   const [open, setOpen] = useState(defaultOpen);
   const [pending, setPending] = useState<Target | null>(null);
   const open_comments = comments.filter((item) => !item.resolved);
-  const annotations = comments.map((item) => ({
-    side: "additions" as const,
-    lineNumber: item.lineStart,
-    metadata: { comment: item },
-  }));
+  const annotations = [
+    ...comments.map((item) => ({
+      side: "additions" as const,
+      lineNumber: item.lineStart,
+      metadata: { comment: item } as Anno,
+    })),
+    ...(pending
+      ? [
+          {
+            side: "additions" as const,
+            lineNumber: pending.lineStart,
+            metadata: { compose: pending } as Anno,
+          },
+        ]
+      : []),
+  ];
+  // The gutter button is the entry point; selection still works for multi-line ranges.
+  const at = (start: number, end: number = start) =>
+    setPending({
+      file: file.path,
+      lineStart: Math.min(start, end),
+      lineEnd: Math.max(start, end),
+      conflict,
+    });
+  // enableGutterUtility draws the slot; renderGutterUtility fills it. The two gutter
+  // APIs are mutually exclusive, so the click is handled inside the button.
   const selection = {
+    enableGutterUtility: true,
     enableLineSelection: true,
     onLineSelectionEnd(range: { start: number; end: number } | null) {
-      if (!range) return;
-      setPending({
-        file: file.path,
-        lineStart: Math.min(range.start, range.end),
-        lineEnd: Math.max(range.start, range.end),
-        conflict,
-      });
+      if (range) at(range.start, range.end);
     },
   };
   const { hovered, onTokenEnter, onTokenLeave } = useTokenHover(file.symbols);
   const diffOptions = { ...BASE_OPTIONS, onTokenEnter, onTokenLeave, ...selection };
   const conflictOptions = { ...BASE_CONFLICT_OPTIONS, onTokenEnter, onTokenLeave, ...selection };
-  const renderComment = (annotation: { metadata: { comment: ReviewComment } }) => (
-    <div className="px-3 py-2">
-      <CommentCard comment={annotation.metadata.comment} onResolve={onResolve} />
-    </div>
+  const renderComment = (annotation: { metadata: Anno }) => {
+    const { comment, compose } = annotation.metadata;
+    if (compose) {
+      return (
+        <div className="px-3 py-2">
+          <CommentComposer
+            target={compose}
+            onSubmit={async (body) => {
+              await onComment(compose, body);
+              setPending(null);
+            }}
+            onCancel={() => setPending(null)}
+          />
+        </div>
+      );
+    }
+    if (!comment) return null;
+    return (
+      <div className="px-3 py-2">
+        <CommentCard comment={comment} onResolve={onResolve} />
+      </div>
+    );
+  };
+  const gutter = (getHoveredLine: () => { lineNumber: number } | undefined) => (
+    <GutterAdd getHoveredLine={getHoveredLine} onPick={(line) => at(line)} />
   );
   const sides = [
     { side: left, contents: file.ours, changed: file.oursChanged, label: "ours" },
@@ -174,16 +214,6 @@ function FileConflict({
         </span>
       </button>
 
-      {open && pending && (
-        <div className="border-t border-border/60 p-3">
-          <CommentComposer
-            target={pending}
-            onSubmit={(body) => onComment(pending, body)}
-            onCancel={() => setPending(null)}
-          />
-        </div>
-      )}
-
       {open && file.conflicted && (
         <div className="border-t border-border/60 p-3">
           <p className="mb-2 text-[11.5px] text-muted-foreground">
@@ -196,6 +226,7 @@ function FileConflict({
               options={conflictOptions}
               lineAnnotations={annotations}
               renderAnnotation={renderComment}
+              renderGutterUtility={gutter}
             />
           </div>
         </div>
@@ -229,6 +260,7 @@ function FileConflict({
                   options={diffOptions}
                   lineAnnotations={annotations}
                   renderAnnotation={renderComment}
+                  renderGutterUtility={gutter}
                 />
               </div>
             </section>

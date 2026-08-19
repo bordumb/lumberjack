@@ -63,7 +63,8 @@ file *imports*, and those are never defined in front of you.
 
 ## Leaving review comments
 
-Select lines in any diff or snippet, on either page, and a composer opens. The comment
+Hover a line and a blue `+` appears in the gutter; click it and the composer opens
+inline at that line. Dragging across the gutter comments on a range. The comment
 is not a note on a screen:
 
 - it is **addressed** — on an agent page to that agent, on a conflict page to both
