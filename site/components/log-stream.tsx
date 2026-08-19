@@ -7,7 +7,7 @@ import { AgentMessage } from "@/components/agent-message";
 import { CodeSnippet } from "@/components/code-snippet";
 import { ToolResultView } from "@/components/tool-result";
 import { CommentCard, CommentComposer, useComments } from "@/components/comments";
-import type { Target } from "@/components/comments";
+import type { Anno, Target } from "@/components/comments";
 import type { ReviewComment } from "@/lib/types";
 import type { SymbolInfo } from "@/components/token-hover";
 import { isCoordination, toolIcon } from "@/components/tool-icon";
@@ -95,28 +95,22 @@ export function LogStream({ workstream, stand }: { workstream: string; stand: st
                 </div>
               )}
             <Entry
-            entry={entry}
-            symbols={symbols}
-            answers={entries[index - 1]?.tool}
-            comments={comments}
-            workstream={task?.primary.id ?? workstream}
-            onSelect={setPending}
-            onResolve={resolve}
+              entry={entry}
+              symbols={symbols}
+              answers={entries[index - 1]?.tool}
+              comments={comments}
+              workstream={task?.primary.id ?? workstream}
+              pending={pending}
+              onSelect={setPending}
+              onSubmit={post}
+              onCancel={() => setPending(null)}
+              onResolve={resolve}
             />
           </Fragment>
         ))}
         <div ref={bottom} />
       </div>
 
-      {pending && (
-        <div className="border-t border-border/60 pt-3">
-          <CommentComposer
-            target={pending}
-            onSubmit={(body) => post(pending, body)}
-            onCancel={() => setPending(null)}
-          />
-        </div>
-      )}
       <div className="hidden">
       </div>
     </div>
@@ -129,7 +123,10 @@ function Entry({
   answers,
   comments,
   workstream,
+  pending,
   onSelect,
+  onSubmit,
+  onCancel,
   onResolve,
 }: {
   entry: LogEntry;
@@ -137,22 +134,54 @@ function Entry({
   answers?: LogEntry["tool"];
   comments: ReviewComment[];
   workstream: string;
+  pending: Target | null;
   onSelect: (target: Target) => void;
+  onSubmit: (target: Target, body: string) => Promise<void>;
+  onCancel: () => void;
   onResolve: (id: string) => Promise<void>;
 }) {
   const path = entry.tool?.target ?? answers?.target ?? "";
   const commentable = /\.[A-Za-z0-9]+$/.test(path);
   const mine = comments.filter((item) => item.file === path);
-  const annotations = mine.map((item) => ({
-    side: "additions" as const,
-    lineNumber: item.lineStart,
-    metadata: { comment: item },
-  }));
-  const renderComment = (annotation: { metadata: { comment: ReviewComment } }) => (
-    <div className="px-3 py-2">
-      <CommentCard comment={annotation.metadata.comment} onResolve={onResolve} />
-    </div>
-  );
+  const composing = pending && pending.file === path ? pending : null;
+  const annotations = [
+    ...mine.map((item) => ({
+      side: "additions" as const,
+      lineNumber: item.lineStart,
+      metadata: { comment: item } as Anno,
+    })),
+    ...(composing
+      ? [
+          {
+            side: "additions" as const,
+            lineNumber: composing.lineStart,
+            metadata: { compose: composing } as Anno,
+          },
+        ]
+      : []),
+  ];
+  // The composer belongs at the line it is about, the same as on a conflict page.
+  // Floating it elsewhere makes the reader hold the line number in their head.
+  const renderComment = (annotation: { metadata: Anno }) => {
+    const { comment, compose } = annotation.metadata;
+    if (compose) {
+      return (
+        <div className="px-3 py-2">
+          <CommentComposer
+            target={compose}
+            onSubmit={(body) => onSubmit(compose, body)}
+            onCancel={onCancel}
+          />
+        </div>
+      );
+    }
+    if (!comment) return null;
+    return (
+      <div className="px-3 py-2">
+        <CommentCard comment={comment} onResolve={onResolve} />
+      </div>
+    );
+  };
   const selectHandler = commentable
     ? (range: { start: number; end: number }) =>
         onSelect({
@@ -193,6 +222,7 @@ function Entry({
             annotations={annotations}
             renderAnnotation={renderComment}
             onSelectLines={selectHandler}
+            forceOpen={Boolean(composing)}
           />
         )}
       </div>
@@ -225,6 +255,7 @@ function Entry({
             annotations={annotations}
             renderAnnotation={renderComment}
             onSelectLines={selectHandler}
+            forceOpen={Boolean(composing)}
           />
         )}
       </div>

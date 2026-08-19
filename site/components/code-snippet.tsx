@@ -7,9 +7,7 @@ import { GutterAdd } from "@/components/gutter-add";
 import { cn } from "@/lib/utils";
 import { TokenHoverCard, useTokenHover } from "@/components/token-hover";
 import type { SymbolInfo } from "@/components/token-hover";
-import type { ReviewComment } from "@/lib/types";
-
-type CommentMetadata = { comment: ReviewComment };
+import type { Anno } from "@/components/comments";
 
 const COLLAPSE_OVER = 5;
 const COLLAPSED_HEIGHT = "9rem";
@@ -35,20 +33,30 @@ export function CodeSnippet({
   annotations,
   renderAnnotation,
   onSelectLines,
+  forceOpen,
 }: {
   code: string;
   before?: string | null;
   language?: string;
   target?: string;
   symbols?: Record<string, SymbolInfo>;
-  annotations?: { side: "additions"; lineNumber: number; metadata: CommentMetadata }[];
-  renderAnnotation?: (annotation: { metadata: CommentMetadata }) => React.ReactNode;
+  annotations?: { side: "additions"; lineNumber: number; metadata: Anno }[];
+  renderAnnotation?: (annotation: { metadata: Anno }) => React.ReactNode;
   onSelectLines?: (range: { start: number; end: number }) => void;
+  /** Held open while a composer is anchored inside it. */
+  forceOpen?: boolean;
 }) {
   const contents = code.replace(/\s+$/, "");
   const lines = contents.split("\n").length + (before ? before.split("\n").length : 0);
   const long = lines > COLLAPSE_OVER;
   const [open, setOpen] = useState(!long);
+  // Commenting on a line you cannot see is not a thing anyone wants to do, so asking
+  // to comment opens the snippet as part of the same gesture.
+  const shown = open || Boolean(forceOpen);
+  const pick = (range: { start: number; end: number }) => {
+    setOpen(true);
+    onSelectLines?.(range);
+  };
   const { hovered, onTokenEnter, onTokenLeave } = useTokenHover(symbols ?? {});
 
   const name = nameFor(target, language);
@@ -64,7 +72,7 @@ export function CodeSnippet({
           enableGutterUtility: true,
           enableLineSelection: true,
           onLineSelectionEnd(range: { start: number; end: number } | null) {
-            if (range) onSelectLines(range);
+            if (range) pick(range);
           },
         }
       : {}),
@@ -78,7 +86,7 @@ export function CodeSnippet({
     ? (getHoveredLine: () => { lineNumber: number } | undefined) => (
         <GutterAdd
           getHoveredLine={getHoveredLine}
-          onPick={(line) => onSelectLines({ start: line, end: line })}
+          onPick={(line) => pick({ start: line, end: line })}
         />
       )
     : undefined;
@@ -92,16 +100,16 @@ export function CodeSnippet({
           onClick={() => setOpen((value) => !value)}
           className="flex w-full items-center gap-1.5 border-b border-border/60 bg-muted/30 px-2.5 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
         >
-          <ChevronRight className={cn("h-3 w-3 transition-transform", open && "rotate-90")} />
+          <ChevronRight className={cn("h-3 w-3 transition-transform", shown && "rotate-90")} />
           <span className="font-mono">{before ? "diff" : language}</span>
           <span className="opacity-60">· {lines} lines</span>
-          <span className="ml-auto opacity-60">{open ? "collapse" : "expand"}</span>
+          <span className="ml-auto opacity-60">{shown ? "collapse" : "expand"}</span>
         </button>
       )}
 
       <div
-        className={cn("relative overflow-x-auto", !open && "overflow-y-hidden")}
-        style={open ? undefined : { maxHeight: COLLAPSED_HEIGHT }}
+        className={cn("relative overflow-x-auto", !shown && "overflow-y-hidden")}
+        style={shown ? undefined : { maxHeight: COLLAPSED_HEIGHT }}
       >
         {before ? (
           <MultiFileDiff
@@ -123,12 +131,12 @@ export function CodeSnippet({
             renderGutterUtility={gutter}
           />
         )}
-        {!open && (
+        {!shown && (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background to-transparent" />
         )}
       </div>
 
-      {long && !open && (
+      {long && !shown && (
         <button
           type="button"
           onClick={() => setOpen(true)}

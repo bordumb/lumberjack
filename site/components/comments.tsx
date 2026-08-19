@@ -20,6 +20,9 @@ const EXPLAIN: Record<CommentStatus, string> = {
   resolved: "closed; no longer blocking a land",
 };
 
+/** What a line annotation carries: a posted comment, or the composer for a new one. */
+export type Anno = { comment?: ReviewComment; compose?: Target };
+
 export type Target = {
   file: string;
   lineStart: number;

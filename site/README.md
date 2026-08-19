@@ -172,7 +172,10 @@ still moving.
 ## Leaving review comments
 
 Hover a line and a blue `+` appears in the gutter; click it and the composer opens
-inline at that line. Dragging across the gutter comments on a range. The comment
+inline at that line -- on a conflict diff, a merge-conflict view, or a transcript
+snippet alike. Dragging across the gutter comments on a range. Asking to comment on a
+collapsed snippet opens it in the same gesture, since commenting on a line you cannot
+see is not something anyone wants to do. The comment
 is not a note on a screen:
 
 - it is **addressed** — on an agent page to that agent, on a conflict page to both
