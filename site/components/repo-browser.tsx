@@ -27,8 +27,11 @@ export function RepoBrowser({ repo }: { repo: string | null }) {
   const { hovered, onTokenEnter, onTokenLeave } = useTokenHover(symbols);
 
   useEffect(() => {
+    // A 404 here means the project was removed. Holding the last good response in
+    // state is why a removed project kept rendering its files: the route re-ran, but
+    // this component still had the tree it fetched before.
     void fetch(`/api/repo${query}`)
-      .then((response) => response.json() as Promise<Info>)
+      .then((response) => (response.ok ? (response.json() as Promise<Info>) : null))
       .then(setInfo);
     void fetch(`/api/repo/tree${query}`)
       .then((response) => response.json() as Promise<Tree>)
@@ -49,7 +52,8 @@ export function RepoBrowser({ repo }: { repo: string | null }) {
       .then((data) => setContents(data.contents ?? "(unreadable)"));
   }, [selected, repo]);
 
-  const paths = useMemo(() => tree?.paths ?? [], [tree]);
+  const gone = info === null && tree !== null && tree.paths.length === 0;
+  const paths = useMemo(() => (gone ? [] : (tree?.paths ?? [])), [tree, gone]);
   const { model } = useFileTree({
     paths,
     initialExpansion: "closed",
@@ -72,6 +76,16 @@ export function RepoBrowser({ repo }: { repo: string | null }) {
       );
     }
   }, [model, tree]);
+
+  if (gone) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <p className="text-sm text-muted-foreground">
+          This project is no longer on the dashboard.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col">

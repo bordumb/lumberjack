@@ -5,5 +5,6 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   const repo = resolveRepo(new URL(req.url).searchParams.get("repo"));
+  if (!repo) return Response.json({ error: "no project" }, { status: 404 });
   return Response.json(await repoInfo(repo));
 }

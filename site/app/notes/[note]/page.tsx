@@ -29,6 +29,7 @@ export default async function NotePage({
   const { note: id } = await params;
   const { stand: requested, repo: requestedRepo } = await searchParams;
   const repo = resolveRepo(requestedRepo ?? null);
+  if (!repo) notFound();
   const stand = requested ?? latestStand(repo);
   const state = stand ? snapshot(stand, repo) : null;
   const note = state?.notes.find((item) => item.id === id);

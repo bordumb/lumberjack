@@ -1,5 +1,7 @@
 import { Dashboard } from "@/components/dashboard";
 import { RepoBrowser } from "@/components/repo-browser";
+import { NoProjects } from "@/components/no-projects";
+import { listRepos } from "@/lib/repos";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +17,9 @@ export default async function Page({
   const { stand, repo } = await searchParams;
 
   if (!stand) {
+    if (listRepos().length === 0) {
+      return <NoProjects />;
+    }
     return (
       <main className="h-full">
         <RepoBrowser repo={repo ?? null} />

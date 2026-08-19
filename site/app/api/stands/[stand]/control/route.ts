@@ -22,6 +22,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ stand: string 
   const { stand } = await ctx.params;
   const body = (await req.json()) as Body;
   const repo = resolveRepo(body.repo ?? null);
+  if (!repo) return Response.json({ error: "no project selected" }, { status: 400 });
   const base = ["run", "lj"];
 
   try {

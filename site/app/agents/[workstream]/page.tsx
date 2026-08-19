@@ -19,6 +19,7 @@ export default async function AgentPage({
   const { workstream } = await params;
   const { stand: requested, repo: requestedRepo } = await searchParams;
   const repo = resolveRepo(requestedRepo ?? null);
+  if (!repo) notFound();
   const stand = requested ?? latestStand(repo);
   const state = stand ? snapshot(stand, repo) : null;
   const task = state ? taskOfLane(state, workstream) : undefined;

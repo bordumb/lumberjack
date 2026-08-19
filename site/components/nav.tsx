@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ChevronRight,
   FolderGit2,
@@ -10,8 +10,10 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  X,
 } from "lucide-react";
 import { AddRepo } from "@/components/add-repo";
+import { notifyReposChanged, useReposChanged } from "@/lib/repos-changed";
 import { NewRun } from "@/components/new-run";
 import { cn } from "@/lib/utils";
 
@@ -38,15 +40,38 @@ const COLLAPSED_KEY = "lj.nav.collapsed";
 export function Nav() {
   const params = useSearchParams();
   const pathname = usePathname();
+  const router = useRouter();
   const activeRepo = params.get("repo");
   const activeStand = params.get("stand");
 
   const [collapsed, setCollapsed] = useState(false);
   const [repos, setRepos] = useState<Repo[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [stands, setStands] = useState<Record<string, StandEntry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
   const [newRunFor, setNewRunFor] = useState<Repo | null>(null);
+  const [removing, setRemoving] = useState<Repo | null>(null);
+
+  /**
+   * Removing a project unregisters it and touches nothing on disk.
+   *
+   * The runs, worktrees and branches are the repository's, not the dashboard's, and a
+   * control in a sidebar is the wrong place to destroy work. Deleting a run has its own
+   * confirmation on the run itself, where what would be lost can be counted.
+   */
+  const forget = async (repo: Repo) => {
+    await fetch("/api/repos", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: repo.path }),
+    });
+    setRemoving(null);
+    // The nav knowing is not enough: the page beside it is server-rendered, so the file
+    // tree of a project just removed stays on screen until the route is re-run.
+    router.replace("/");
+    notifyReposChanged();
+  };
 
   useEffect(() => {
     setCollapsed(localStorage.getItem(COLLAPSED_KEY) === "1");
@@ -63,6 +88,7 @@ export function Nav() {
     const response = await fetch("/api/repos");
     const data = (await response.json()) as { repos: Repo[] };
     setRepos(data.repos);
+    setLoaded(true);
     return data.repos;
   }, []);
 
@@ -89,6 +115,14 @@ export function Nav() {
     }, 3000);
     return () => clearInterval(timer);
   }, [expanded, loadStands]);
+
+  // Any project added or removed anywhere, by any control, lands here.
+  useReposChanged(
+    useCallback(() => {
+      void loadRepos();
+      router.refresh();
+    }, [loadRepos, router]),
+  );
 
   const toggleRepo = (repo: string) => {
     setExpanded((current) => {
@@ -144,7 +178,10 @@ export function Nav() {
           ))}
         </div>
         {adding && (
-          <AddRepo onClose={() => setAdding(false)} onAdded={() => void loadRepos()} />
+          <AddRepo
+            onClose={() => setAdding(false)}
+            onAdded={() => undefined}
+          />
         )}
       </nav>
     );
@@ -172,6 +209,12 @@ export function Nav() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 pb-3">
+        {loaded && repos.length === 0 && (
+          <p className="px-2 py-6 text-[12px] leading-relaxed text-muted-foreground">
+            No projects. Use <span className="text-foreground">Add project</span> to point
+            the dashboard at a git repository.
+          </p>
+        )}
         {repos.map((repo) => {
           const isOpen = expanded.has(repo.path);
           const runs = stands[repo.path] ?? [];
@@ -210,7 +253,42 @@ export function Nav() {
                 >
                   <Plus className="h-3.5 w-3.5" />
                 </button>
+                <button
+                  type="button"
+                  title={`remove ${repo.name} from the dashboard`}
+                  aria-label={`remove ${repo.name} from the dashboard`}
+                  onClick={() => setRemoving(repo)}
+                  className="rounded p-1 text-muted-foreground/50 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
               </div>
+
+              {removing?.path === repo.path && (
+                <div className="mx-1 mt-1 rounded-md border border-destructive/40 bg-card p-2.5">
+                  <p className="text-[12px]">Remove {repo.name}?</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Takes it off this dashboard. Nothing on disk is deleted -- its runs,
+                    worktrees and branches stay where they are, and you can add it again.
+                  </p>
+                  <div className="mt-2 flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => void forget(repo)}
+                      className="rounded-md bg-destructive px-2 py-0.5 text-[11px] font-medium text-white"
+                    >
+                      Remove
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRemoving(null)}
+                      className="rounded-md border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {isOpen && (
                 <div className="ml-4 mt-0.5 border-l border-border/50 pl-2">
@@ -256,7 +334,12 @@ export function Nav() {
         </span>
       </footer>
 
-      {adding && <AddRepo onClose={() => setAdding(false)} onAdded={() => void loadRepos()} />}
+      {adding && (
+        <AddRepo
+          onClose={() => setAdding(false)}
+          onAdded={() => undefined}
+        />
+      )}
       {newRunFor && (
         <NewRun
           repo={newRunFor.path}

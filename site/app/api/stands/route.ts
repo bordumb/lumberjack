@@ -9,6 +9,7 @@ export const dynamic = "force-dynamic";
  */
 export function GET(req: Request) {
   const repo = resolveRepo(new URL(req.url).searchParams.get("repo"));
+  if (!repo) return Response.json({ stands: [], latest: null, repo: null });
   const stands = listStands(repo).map((entry) => {
     const state = snapshot(entry.stand, repo);
     return {

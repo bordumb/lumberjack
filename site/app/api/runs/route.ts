@@ -35,6 +35,7 @@ export async function POST(req: Request) {
   const body = (await req.json()) as Body;
   const repo = resolveRepo(body.repo ?? null);
   const agents = body.agents ?? [];
+  if (!repo) return Response.json({ error: "no project selected" }, { status: 400 });
 
   if (!body.name?.trim()) {
     return Response.json({ error: "a run needs a name" }, { status: 400 });

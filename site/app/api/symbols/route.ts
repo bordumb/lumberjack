@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   const params = new URL(req.url).searchParams;
   const repo = resolveRepo(params.get("repo"));
+  if (!repo) return Response.json({});
   const stand = params.get("stand") ?? latestStand(repo);
   const state = stand ? snapshot(stand, repo) : null;
   const rev = state?.integrationHead ?? "HEAD";

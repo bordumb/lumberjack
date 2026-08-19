@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ArrowUp, Check, FolderGit2, FolderOpen, X } from "lucide-react";
+import { notifyReposChanged } from "@/lib/repos-changed";
 import { cn } from "@/lib/utils";
 
 type DirEntry = { name: string; path: string; isRepo: boolean };
@@ -43,6 +44,7 @@ export function AddRepo({ onClose, onAdded }: { onClose: () => void; onAdded: ()
       setError(((await response.json()) as { error: string }).error);
       return;
     }
+    notifyReposChanged();
     onAdded();
     onClose();
   };

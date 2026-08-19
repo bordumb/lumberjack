@@ -18,6 +18,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ workstream: str
   const { workstream } = await ctx.params;
   const params = new URL(req.url).searchParams;
   const repo = resolveRepo(params.get("repo"));
+  if (!repo) return new Response("no project", { status: 404 });
   const stand = params.get("stand") ?? latestStand(repo);
   const state = stand ? snapshot(stand, repo) : null;
   const task = state ? taskOfLane(state, workstream) : undefined;
