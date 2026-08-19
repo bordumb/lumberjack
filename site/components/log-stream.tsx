@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { AgentMessage } from "@/components/agent-message";
 import { CodeSnippet } from "@/components/code-snippet";
 import { CommentCard, CommentComposer, useComments } from "@/components/comments";
 import type { Target } from "@/components/comments";
@@ -233,9 +234,7 @@ function Entry({
           </Badge>
           <span className="font-mono text-[10.5px] text-muted-foreground/60">{time(entry.at)}</span>
         </div>
-        <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90">
-          {entry.text}
-        </p>
+        <AgentMessage text={entry.text} />
       </div>
     );
   }

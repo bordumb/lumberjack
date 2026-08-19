@@ -101,6 +101,11 @@ does not.
 the file or command they act on; coordination calls (`claim`, `awareness`, `check_merge`,
 `request_land`) are tinted so they stand out from ordinary file work.
 
+What an agent *says* is rendered as markdown rather than dumped as text -- agents
+report in headed sections and status tables, and as plain text those arrive as a wall
+of pipes and hashes. Anything past five lines collapses on the same rule as code, so a
+transcript stays scrollable.
+
 Every snippet goes through `@pierre/diffs`, so the log is syntax-highlighted rather than
 grey text. An `Edit` shows as a real split diff, because the replacement text alone does
 not tell you what changed. Tool results are highlighted in the language of the call they
