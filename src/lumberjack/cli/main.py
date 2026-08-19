@@ -3,12 +3,20 @@
 ``cyclopts`` rather than ``typer`` because the whole project is annotation-driven:
 signatures are the source of truth here too, with no decorator arguments repeating
 what the types already say.
+
+Nothing in this module writes to a stream directly.  Commands gather state, hand it to
+:mod:`lumberjack.cli.render`, and print the result through
+:class:`lumberjack.cli.output.Output` -- which is what makes ``--json`` safe to pipe and
+the whole surface testable.  Every command returns an
+:class:`~lumberjack.cli.render.ExitCode`; ``_exit`` turns anything but ``OK`` into a
+``SystemExit``, because a harness that always exits zero cannot be used in CI.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
+import logging
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Annotated
 
@@ -19,8 +27,13 @@ from lumberjack.adapters.clock import SystemClock
 from lumberjack.adapters.git_cli import GitCli
 from lumberjack.adapters.sqlite_ledger import SqliteLedger
 from lumberjack.agents.outputs import Plan
+from lumberjack.cli import live, render
+from lumberjack.cli.output import Output, default_output
+from lumberjack.cli.project import detect_gate
+from lumberjack.cli.render import ExitCode
 from lumberjack.core.control import StandControl, stand_alive
 from lumberjack.core.projections import Projections
+from lumberjack.core.services import Services
 from lumberjack.domain.events import StandHalted, StandRenamed
 from lumberjack.domain.request import MODELS, RunRequest
 from lumberjack.domain.task import TaskSpec
@@ -39,12 +52,38 @@ from lumberjack.stand import Stand
 
 __all__ = ["app", "main"]
 
+log = logging.getLogger(__name__)
+
 app = cyclopts.App(
     name="lj",
     help="Run a swarm of AI agents in parallel git worktrees, with awareness.",
 )
 
 CONFIG_NAME = "lumberjack.json"
+
+AsJson = Annotated[
+    bool,
+    cyclopts.Parameter(name=["--json", "--as-json"], help="Machine-readable output."),
+]
+"""``--json`` everywhere it is offered, so scripts never have to parse a table.
+
+``--as-json`` stays as an alias because ``lj models --as-json`` is already wired into
+the web interface, and renaming a flag out from under a running caller is not a fix.
+"""
+
+
+def _out() -> Output:
+    return default_output()
+
+
+def _exit(code: ExitCode) -> None:
+    """Leave with a code a shell can branch on.  ``OK`` returns rather than raising."""
+    if code is not ExitCode.OK:
+        raise SystemExit(int(code))
+
+
+def _run(command: Callable[[], Coroutine[object, object, ExitCode]]) -> None:
+    _exit(asyncio.run(command()))
 
 
 def _load_config(repo: Path) -> StandConfig:
@@ -58,6 +97,10 @@ def _state_root(repo: Path) -> Path:
     return _load_config(repo).resolved_state_root()
 
 
+def _ledger_path(repo: Path, stand: StandId) -> Path:
+    return _state_root(repo) / stand / "ledger.db"
+
+
 def _latest_stand(repo: Path) -> StandId | None:
     root = _state_root(repo)
     if not root.is_dir():
@@ -69,14 +112,60 @@ def _latest_stand(repo: Path) -> StandId | None:
     return StandId(stands[-1].name) if stands else None
 
 
+def _require_stand(repo: Path, stand: str | None, *, action: str) -> StandId:
+    """The stand to act on, or a message saying what to do instead.
+
+    A named stand with no ledger is the same failure as no stands at all: the command
+    cannot proceed, and saying so beats silently creating an empty database.
+    """
+    target = StandId(stand) if stand else _latest_stand(repo)
+    if target is None or not _ledger_path(repo, target).is_file():
+        _out().problem(render.no_stands(repo, action=action))
+        raise SystemExit(int(ExitCode.NO_STAND))
+    return target
+
+
 async def _replay(repo: Path, stand: StandId) -> Projections:
-    ledger = await SqliteLedger.open(stand, _state_root(repo) / stand / "ledger.db")
+    ledger = await SqliteLedger.open(stand, _ledger_path(repo, stand))
     projections = Projections(stand=stand)
     try:
         await projections.hydrate(ledger)
     finally:
         await ledger.close()
     return projections
+
+
+def _usage_by_workstream(services: Services) -> render.UsageByWorkstream | None:
+    """Per-workstream token counts, once 0002's usage ledger is wired into ``Services``.
+
+    Read structurally rather than imported: 0002 and 0003 are being built at the same
+    time, and a display that hard-imports an interface which does not exist yet blocks
+    on a sibling instead of rendering everything else it knows.
+    """
+    ledger = getattr(services, "usage", None)
+    if ledger is None:
+        return None
+    try:
+        return {
+            workstream: ledger.for_workstream(workstream)
+            for workstream in services.projections.workstreams
+        }
+    except AttributeError as error:
+        # The usage ledger landed with a different shape than 0002 published. Losing a
+        # column is a fair trade against failing a run that has otherwise finished.
+        log.warning("usage ledger does not answer for_workstream(): %s", error)
+        return None
+
+
+def _usage_total(services: Services) -> render.UsageTotalsLike | None:
+    ledger = getattr(services, "usage", None)
+    if ledger is None:
+        return None
+    try:
+        return ledger.totals()
+    except AttributeError as error:
+        log.warning("usage ledger does not answer totals(): %s", error)
+        return None
 
 
 @app.command
@@ -87,8 +176,20 @@ def init(
     arbitration: ArbitrationMode = ArbitrationMode.HYBRID,
     model: str = "anthropic:claude-opus-5",
 ) -> None:
-    """Write a lumberjack.json and prepare the state directory."""
-    config = StandConfig(repo=repo, max_parallel=max_parallel, arbitration=arbitration, model=model)
+    """Write a lumberjack.json and prepare the state directory.
+
+    The gate commands come from what is in the repository rather than from a default:
+    writing ``uv run pytest`` into a Node project teaches its agents on the first bounce
+    that the gate is noise.
+    """
+    detection = detect_gate(repo)
+    config = StandConfig(
+        repo=repo,
+        max_parallel=max_parallel,
+        arbitration=arbitration,
+        model=model,
+        gate_commands=detection.commands,
+    )
     target = repo / CONFIG_NAME
     target.write_text(config.model_dump_json(indent=2, exclude={"repo"}))
     config.resolved_state_root().mkdir(parents=True, exist_ok=True)
@@ -98,29 +199,33 @@ def init(
     if not gitignore.is_file() or entry not in gitignore.read_text():
         with gitignore.open("a", encoding="utf-8") as handle:
             handle.write(entry)
-    print(f"wrote {target}")
-    print(f"state  {config.resolved_state_root()}")
-    print(f"arbitration: {arbitration.value}, up to {max_parallel} parallel workstreams")
+    _out().emit(
+        render.init_report(
+            config_path=target,
+            state_root=config.resolved_state_root(),
+            detection=detection,
+            arbitration=arbitration,
+            max_parallel=max_parallel,
+        )
+    )
 
 
 @app.command
-def plan(goal: str, *, repo: Path = Path(), dry_run: bool = True) -> None:
-    """Scout the repository and print the task graph, without running anything."""
+def plan(goal: str, *, repo: Path = Path()) -> None:
+    """Scout the repository and print the task graph, without running anything.
 
-    async def go() -> None:
+    Nothing here executes: ``lj run`` is the command that does.  (The old ``--dry-run``
+    flag defaulted to true and changed nothing but a closing hint, so it is gone.)
+    """
+
+    async def go() -> ExitCode:
         config = _load_config(repo)
         async with Stand.open(config) as stand:
             graph = await stand.plan(goal)
-            for layer, wave in enumerate(graph.topological_layers(), start=1):
-                print(f"wave {layer}:")
-                for spec in wave:
-                    scope = spec.predicted_scope.describe() if spec.predicted_scope else "?"
-                    print(f"  {spec.task_id}  {spec.title}")
-                    print(f"      scope: {scope}")
-            if not dry_run:
-                print("\n(use `lj run` to execute)")
+            _out().emit(render.plan_view(graph))
+        return ExitCode.OK
 
-    asyncio.run(go())
+    _run(go)
 
 
 def _plan_from_specs(repo: Path, specs: list[Path]) -> Plan:
@@ -187,9 +292,13 @@ def run(
 
     Give a goal to have the foreman decompose it, or one ``--spec`` per file to skip
     planning entirely and put one agent on each specification.
+
+    The run renders live off the ledger while it happens.  Exit code is ``0`` only when
+    every task landed; a blocked task exits ``1`` so CI can tell the difference.
     """
 
-    async def go() -> None:
+    async def go() -> ExitCode:
+        out = _out()
         config = _load_config(repo)
         if n is not None:
             config = config.model_copy(update={"max_parallel": n})
@@ -198,12 +307,16 @@ def run(
         if runtime is not None:
             config = config.model_copy(update={"worker_runtime": runtime})
 
-        run_request = RunRequest.model_validate_json(request.read_text()) if request else None
-        plan = (
-            Plan(tasks=run_request.task_specs(), max_parallel=len(run_request.agents))
-            if run_request
-            else (_plan_from_specs(repo, spec) if spec else None)
-        )
+        try:
+            run_request = RunRequest.model_validate_json(request.read_text()) if request else None
+            plan = (
+                Plan(tasks=run_request.task_specs(), max_parallel=len(run_request.agents))
+                if run_request
+                else (_plan_from_specs(repo, spec) if spec else None)
+            )
+        except (OSError, ValueError) as error:
+            out.problem(render.usage_error(str(error)))
+            return ExitCode.USAGE
         if run_request is not None:
             config = config.model_copy(update={"worker_runtime": run_request.runtime})
 
@@ -212,11 +325,15 @@ def run(
         carried_from: StandId | None = None
         carried_goal: str | None = None
         if resume is not None and plan is None:
-            carried_from = StandId(resume)
+            carried_from = _require_stand(repo, resume, action="run --resume")
             carried = await _tasks_of_stand(repo, carried_from)
             if not carried:
-                print(f"stand {resume} recorded no tasks, so there is nothing to continue")
-                raise SystemExit(3)
+                out.problem(
+                    render.usage_error(
+                        f"stand {resume} recorded no tasks, so there is nothing to continue"
+                    )
+                )
+                return ExitCode.NO_STAND
             plan = Plan(tasks=carried, max_parallel=len(carried))
             carried_goal = f"continue {resume}"
 
@@ -224,8 +341,8 @@ def run(
             config = config.model_copy(update={"max_parallel": len(plan.tasks)})
         goal_text = goal or carried_goal or (run_request.name if run_request else None)
         if goal_text is None and plan is None:
-            print("give a goal, or one --spec per specification file")
-            return
+            out.problem(render.usage_error("give a goal, or one --spec per specification file"))
+            return ExitCode.USAGE
         description = goal_text or "implement " + ", ".join(
             item.title for item in (plan.tasks if plan else ())
         )
@@ -236,33 +353,37 @@ def run(
                 stand.supervisor.resumed_from = carried_from or StandId(resume)
                 found = await _resume_bases(config.repo, resume, plan)
                 if not found:
-                    print(f"no branches found for stand {resume}; nothing to resume from")
-                    raise SystemExit(3)
+                    out.problem(
+                        render.usage_error(f"no branches found for stand {resume} to resume from")
+                    )
+                    return ExitCode.NO_STAND
                 stand.supervisor.resume_bases.update(found)
-                for task_id, commit in found.items():
-                    print(f"resuming {task_id} from {commit[:8]}")
+                out.emit(render.resume_bases(found))
             if run_request is not None:
                 stand.supervisor.model_overrides.update(run_request.models())
-            print(f"stand {stand.stand_id} on {config.repo}")
-            print(f"runtime: {config.worker_runtime}, up to {config.max_parallel} parallel")
+            out.emit(
+                render.run_banner(
+                    stand=stand.stand_id,
+                    repo=config.repo,
+                    runtime=config.worker_runtime,
+                    parallel=config.max_parallel,
+                )
+            )
+            watcher = asyncio.create_task(
+                live.follow(stand.services.ledger, stand=stand.stand_id, output=out)
+            )
             try:
                 outcome = await stand.supervisor.run(description, plan=plan)
             except CoordinationUnavailableError as error:
-                print(f"\ncoordination is unavailable, so the stand did not start:\n  {error}")
-                print(
-                    "\nAgents would have run without claims, awareness or conflict "
-                    "checks -- writing code blind while this reported progress."
-                )
-                raise SystemExit(3) from error
-            print(outcome.summary())
-            for item in outcome.workstreams:
-                print(f"  {item.agent}  {item.task.kind:<20} {item.task.spec.title}")
-            if outcome.preserved_worktrees:
-                print("\npreserved worktrees (unlanded work):")
-                for path in outcome.preserved_worktrees:
-                    print(f"  {path}")
+                out.problem(render.coordination_unavailable(error))
+                return ExitCode.NO_STAND
+            finally:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
+            out.emit(render.outcome_report(outcome, usage=_usage_total(stand.services)))
+            return render.exit_code_for(outcome)
 
-    asyncio.run(go())
+    _run(go)
 
 
 async def _tasks_of_stand(repo: Path, stand: StandId) -> tuple[TaskSpec, ...]:
@@ -284,16 +405,15 @@ async def _resume_bases(repo: Path, stand: str, plan: Plan) -> dict[TaskId, Comm
     return found
 
 
-async def _open_stand(repo: Path, stand: StandId):  # noqa: ANN202 - internal helper
+async def _open_stand(repo: Path, stand: StandId) -> tuple[Services, SqliteLedger]:
     """Open a stand's ledger for writing, with projections hydrated."""
     from lumberjack.adapters.ast_indexer import AstIndexer
     from lumberjack.adapters.projecting import ProjectingLedger
     from lumberjack.adapters.uv_gate import NullGate
-    from lumberjack.core.services import Services
 
     config = _load_config(repo)
     projections = Projections(stand=stand)
-    inner = await SqliteLedger.open(stand, _state_root(repo) / stand / "ledger.db")
+    inner = await SqliteLedger.open(stand, _ledger_path(repo, stand))
     ledger = ProjectingLedger(inner=inner, projections=projections)
     await projections.hydrate(ledger)
     services = Services.wire(
@@ -329,11 +449,8 @@ def comment(
     comment blocks that work from landing until it is resolved.
     """
 
-    async def go() -> None:
-        target = StandId(stand) if stand else _latest_stand(repo)
-        if target is None:
-            print("no stands found")
-            raise SystemExit(3)
+    async def go() -> ExitCode:
+        target = _require_stand(repo, stand, action="comment")
         services, inner = await _open_stand(repo, target)
         try:
             posted = await services.review.comment(
@@ -345,164 +462,171 @@ def comment(
                 workstream=WorkstreamId(workstream) if workstream else None,
                 conflict_id=ConflictId(conflict) if conflict else None,
             )
+            # `_recipients` is the only form the review service offers; a public one
+            # belongs to whoever owns core/review.py, not to the rendering change.
             recipients = services.review._recipients(posted)
-            print(f"{posted.comment_id} on {posted.file}:{posted.lines}")
-            print("delivered to: " + (", ".join(recipients) or "nobody active"))
+            _out().emit(render.comment_receipt(posted, recipients))
         finally:
             await inner.close()
+        return ExitCode.OK
 
-    asyncio.run(go())
+    _run(go)
 
 
 @app.command
 def resolve(comment_id: str, *, repo: Path = Path(), stand: str | None = None) -> None:
     """Mark a review comment resolved, unblocking the workstream it was holding."""
 
-    async def go() -> None:
-        target = StandId(stand) if stand else _latest_stand(repo)
-        if target is None:
-            print("no stands found")
-            raise SystemExit(3)
+    async def go() -> ExitCode:
+        target = _require_stand(repo, stand, action="resolve")
         services, inner = await _open_stand(repo, target)
         try:
             await services.review.resolve(CommentId(comment_id))
-            print(f"resolved {comment_id}")
+            _out().line(f"resolved {comment_id}", style="green")
         finally:
             await inner.close()
+        return ExitCode.OK
 
-    asyncio.run(go())
+    _run(go)
 
 
 @app.command
 def comments(
-    *, repo: Path = Path(), stand: str | None = None, include_resolved: bool = False
+    *,
+    repo: Path = Path(),
+    stand: str | None = None,
+    include_resolved: bool = False,
+    as_json: AsJson = False,
 ) -> None:
     """List review comments and whether they are still holding work back."""
 
-    async def go() -> None:
-        target = StandId(stand) if stand else _latest_stand(repo)
-        if target is None:
-            print("no stands found")
-            raise SystemExit(3)
+    async def go() -> ExitCode:
+        target = _require_stand(repo, stand, action="comments")
         projections = await _replay(repo, target)
-        found = [item for item in projections.comments.values() if all or not item.resolved]
-        if not found:
-            print("no open review comments")
-            return
-        for item in found:
-            state = "resolved" if item.resolved else "open"
-            print(f"  {item.comment_id}  [{state}]  {item.render()}")
+        found = [
+            item
+            for item in projections.comments.values()
+            if include_resolved or not item.resolved
+        ]
+        if as_json:
+            _out().json(render.comments_json(found))
+        else:
+            _out().emit(render.comments_view(found))
+        return ExitCode.OK
 
-    asyncio.run(go())
+    _run(go)
 
 
 @app.command
-def models(*, as_json: bool = False) -> None:
+def models(*, as_json: AsJson = False) -> None:
     """List the providers and models a run can be configured with."""
     if as_json:
-        print(json.dumps([item.model_dump(mode="json") for item in MODELS]))
+        _out().json([item.model_dump(mode="json") for item in MODELS])
         return
-    for item in MODELS:
-        mark = " (default)" if item.default else ""
-        print(f"  {item.provider.value}:{item.id:<28} {item.label}{mark}")
-        if item.note:
-            print(f"      {item.note}")
+    _out().emit(render.models_view(MODELS))
 
 
 @app.command
-def status(*, repo: Path = Path(), stand: str | None = None) -> None:
+def status(
+    *, repo: Path = Path(), stand: str | None = None, as_json: AsJson = False
+) -> None:
     """Workstreams, leases, conflicts and the train, replayed from the ledger."""
 
-    async def go() -> None:
-        target = StandId(stand) if stand else _latest_stand(repo)
-        if target is None:
-            print("no stands found; run `lj run` first")
-            return
+    async def go() -> ExitCode:
+        target = _require_stand(repo, stand, action="status")
         projections = await _replay(repo, target)
-        clock = SystemClock()
-        ledger_file = _state_root(repo) / target / "ledger.db"
-        lifecycle = projections.lifecycle(stand_alive(projections.pid, ledger_file))
-        print(f"stand {target} [{lifecycle}]: {projections.title}")
-        if lifecycle == "stale":
-            print("  the supervisor that started this run is gone; nothing below is running")
-        elif lifecycle != "live":
-            print(f"  this stand is {lifecycle}; nothing below is running")
-        print(
-            f"integration: {projections.integration_branch} @ "
-            f"{(projections.integration_head or '?')[:8]}"
+        lifecycle = projections.lifecycle(
+            stand_alive(projections.pid, _ledger_path(repo, target))
         )
-        print(f"\nworkstreams ({len(projections.workstreams)}):")
-        for item in projections.workstreams.values():
-            task = projections.tasks.get(item.task)
-            state = task.kind if task is not None else "unknown"
-            gone = "" if item.worktree.path.is_dir() else "  (worktree removed)"
-            print(f"  {item.agent:<24} {state:<20} {item.worktree.branch}{gone}")
-        leases = projections.active_leases(clock.now())
-        print(f"\nleases ({len(leases)}):")
-        for lease in leases:
-            print(f"  {lease.holder:<24} {lease.mode.value:<10} {lease.scope.describe()}")
-        print(f"\nopen conflicts ({len(projections.conflicts)}):")
-        for report in projections.conflicts.values():
-            print(f"  {report.summary()}")
-        if projections.train:
-            print(f"\ntrain: {' -> '.join(projections.train)}")
+        present = live.worktrees_present(projections)
+        now = SystemClock().now()
+        if as_json:
+            _out().json(
+                render.status_json(
+                    projections,
+                    stand=target,
+                    lifecycle=lifecycle,
+                    now=now,
+                    present=present,
+                )
+            )
+        else:
+            _out().emit(
+                render.status_view(
+                    projections,
+                    stand=target,
+                    lifecycle=lifecycle,
+                    now=now,
+                    present=present,
+                )
+            )
+        return ExitCode.OK
 
-    asyncio.run(go())
+    _run(go)
 
 
 @app.command
-def conflicts(*, repo: Path = Path(), stand: str | None = None, explain: str | None = None) -> None:
-    """Open conflicts, with the oracle's evidence."""
+def conflicts(
+    *,
+    repo: Path = Path(),
+    stand: str | None = None,
+    explain: str | None = None,
+    as_json: AsJson = False,
+) -> None:
+    """Open conflicts, with the oracle's evidence.
 
-    async def go() -> None:
-        target = StandId(stand) if stand else _latest_stand(repo)
-        if target is None:
-            print("no stands found")
-            return
+    ``--explain <id>`` adds the conflicting hunks and the negotiation transcript -- the
+    single most informative thing the system knows about a pair of agents.
+    """
+
+    async def go() -> ExitCode:
+        target = _require_stand(repo, stand, action="conflicts")
         projections = await _replay(repo, target)
-        for report in projections.conflicts.values():
-            if explain is not None and report.conflict_id != explain:
-                continue
-            print(report.summary())
-            for item in report.files:
-                symbols = ", ".join(str(symbol) for symbol in item.symbols[:4])
-                print(f"    {item.path}" + (f"  ({symbols})" if symbols else ""))
-            if explain is not None and report.evidence:
-                print("    evidence:")
-                for line in report.evidence.splitlines()[:20]:
-                    print(f"      {line}")
-        if not projections.conflicts:
-            print("no open conflicts")
+        if explain is not None and ConflictId(explain) not in projections.conflicts:
+            _out().problem(render.usage_error(f"no open conflict {explain} in {target}"))
+            return ExitCode.USAGE
+        if as_json:
+            _out().json(render.conflicts_json(projections))
+        else:
+            _out().emit(
+                render.conflicts_view(
+                    projections, explain=ConflictId(explain) if explain else None
+                )
+            )
+        return ExitCode.OK
 
-    asyncio.run(go())
+    _run(go)
 
 
 @app.command
-def board(*, repo: Path = Path(), stand: str | None = None, topic: str | None = None) -> None:
+def board(
+    *,
+    repo: Path = Path(),
+    stand: str | None = None,
+    topic: str | None = None,
+    as_json: AsJson = False,
+) -> None:
     """Read the blackboard."""
 
-    async def go() -> None:
-        target = StandId(stand) if stand else _latest_stand(repo)
-        if target is None:
-            print("no stands found")
-            return
+    async def go() -> ExitCode:
+        target = _require_stand(repo, stand, action="board")
         projections = await _replay(repo, target)
-        for note in projections.notes:
-            if topic is None or note.topic == topic:
-                print(note.render())
+        notes = [note for note in projections.notes if topic is None or note.topic == topic]
+        if as_json:
+            _out().json(render.board_json(notes))
+        else:
+            _out().emit(render.board_view(notes))
+        return ExitCode.OK
 
-    asyncio.run(go())
+    _run(go)
 
 
 @app.command
 def promote(*, repo: Path = Path(), stand: str | None = None, into: str | None = None) -> None:
     """Merge the integration branch into the base branch.  The human gate."""
 
-    async def go() -> None:
-        target = StandId(stand) if stand else _latest_stand(repo)
-        if target is None:
-            print("no stands found")
-            return
+    async def go() -> ExitCode:
+        target = _require_stand(repo, stand, action="promote")
         config = _load_config(repo)
         projections = await _replay(repo, target)
         git = GitCli(repo=repo)
@@ -512,30 +636,27 @@ def promote(*, repo: Path = Path(), stand: str | None = None, into: str | None =
             destination,
             message=f"promote {target}: {projections.goal}",
         )
-        print(f"{outcome.status} -> {destination} @ {(outcome.head or '?')[:8]}")
-        if outcome.conflicted:
-            print("conflicted: " + ", ".join(outcome.conflicted))
+        _out().emit(render.promote_report(outcome, destination=destination))
+        return ExitCode.PARTIAL if outcome.conflicted else ExitCode.OK
 
-    asyncio.run(go())
+    _run(go)
 
 
 @app.command
 def halt(*, repo: Path = Path(), stand: str | None = None, reason: str = "operator halt") -> None:
     """Ask a running stand to drain and stop.  Worktrees with unlanded work are kept."""
 
-    async def go() -> None:
-        target = StandId(stand) if stand else _latest_stand(repo)
-        if target is None:
-            print("no stands found")
-            return
-        ledger = await SqliteLedger.open(target, _state_root(repo) / target / "ledger.db")
+    async def go() -> ExitCode:
+        target = _require_stand(repo, stand, action="halt")
+        ledger = await SqliteLedger.open(target, _ledger_path(repo, target))
         try:
             await ledger.append(StandHalted(reason=reason))
         finally:
             await ledger.close()
-        print(f"halt requested for {target}")
+        _out().line(f"halt requested for {target}", style="yellow")
+        return ExitCode.OK
 
-    asyncio.run(go())
+    _run(go)
 
 
 @app.command
@@ -546,28 +667,34 @@ def resume(*, repo: Path = Path(), stand: str | None = None) -> None:
     rather than one process lifetime, so this adds a session instead of forking a run.
     """
 
-    async def go() -> None:
-        target = StandId(stand) if stand else _latest_stand(repo)
-        if target is None:
-            print("no stands found")
-            raise SystemExit(3)
+    async def go() -> ExitCode:
+        out = _out()
+        target = _require_stand(repo, stand, action="resume")
         opened = await Stand.attach(target, _load_config(repo))
         try:
             outstanding = opened.services.projections.outstanding()
             if not outstanding:
-                print(f"{target} has nothing outstanding; every task landed or was abandoned")
-                raise SystemExit(0)
-            print(f"resuming {target}: {', '.join(outstanding)}")
-            print(f"runtime: {opened.config.worker_runtime}")
-            outcome = await opened.resume()
-            print(outcome.summary())
+                out.line(f"{target} has nothing outstanding; every task landed or was abandoned")
+                return ExitCode.OK
+            out.line(f"resuming {target}: {', '.join(outstanding)}", style="bold")
+            out.line(f"runtime: {opened.config.worker_runtime}", style="dim")
+            watcher = asyncio.create_task(
+                live.follow(opened.services.ledger, stand=target, output=out)
+            )
+            try:
+                outcome = await opened.resume()
+            finally:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
+            out.emit(render.outcome_report(outcome, usage=_usage_total(opened.services)))
+            return render.exit_code_for(outcome)
         except CoordinationUnavailableError as error:
-            print(f"\ncoordination is unavailable, so the stand did not resume:\n  {error}")
-            raise SystemExit(3) from error
+            out.problem(render.coordination_unavailable(error, verb="resume"))
+            return ExitCode.NO_STAND
         finally:
             await opened.close()
 
-    asyncio.run(go())
+    _run(go)
 
 
 @app.command
@@ -578,19 +705,17 @@ def rename(name: str, *, repo: Path = Path(), stand: str | None = None) -> None:
     run was originally given -- both stay visible.
     """
 
-    async def go() -> None:
-        target = StandId(stand) if stand else _latest_stand(repo)
-        if target is None:
-            print("no stands found")
-            raise SystemExit(3)
-        ledger = await SqliteLedger.open(target, _state_root(repo) / target / "ledger.db")
+    async def go() -> ExitCode:
+        target = _require_stand(repo, stand, action="rename")
+        ledger = await SqliteLedger.open(target, _ledger_path(repo, target))
         try:
             await ledger.append(StandRenamed(name=name))
         finally:
             await ledger.close()
-        print(f"{target} is now {name!r}")
+        _out().line(f"{target} is now {name!r}")
+        return ExitCode.OK
 
-    asyncio.run(go())
+    _run(go)
 
 
 @app.command
@@ -607,68 +732,57 @@ def delete(
     deletion that silently discards it is not one anybody can undo.
     """
 
-    async def go() -> None:
-        target = StandId(stand) if stand else _latest_stand(repo)
-        if target is None:
-            print("no stands found")
-            raise SystemExit(3)
+    async def go() -> ExitCode:
+        out = _out()
+        target = _require_stand(repo, stand, action="delete")
         config = _load_config(repo)
         projections = await _replay(repo, target)
         control = StandControl(repo=repo, config=config)
         git = GitCli(repo=repo)
 
         plan = await control.plan_deletion(target, projections, git)
-        print(f"{target}: {plan.describe()}")
-        if plan.running and not force:
-            print("  it is still running. Halt it first, or pass --force.")
-            raise SystemExit(1)
-        if plan.unlanded and not force:
-            for branch in plan.unlanded:
-                print(f"  holds unlanded work: {branch}")
-            print("  pass --force to delete anyway; branches are kept unless --drop-branches.")
-            raise SystemExit(1)
+        out.emit(render.deletion_plan(target, plan, force=force))
+        if not plan.safe and not force:
+            return ExitCode.PARTIAL
 
         await control.delete(target, projections, git, drop_branches=drop_branches)
         kept = "" if drop_branches else f" ({len(plan.branches)} branch(es) kept)"
-        print(f"deleted {target}{kept}")
+        out.line(f"deleted {target}{kept}", style="green")
+        return ExitCode.OK
 
-    asyncio.run(go())
+    _run(go)
 
 
 @app.command
 def replay(
-    stand: str, *, repo: Path = Path(), kinds: str | None = None, as_json: bool = False
+    stand: str, *, repo: Path = Path(), kinds: str | None = None, as_json: AsJson = False
 ) -> None:
     """Print the event log.  Every projection in the system is a fold over this."""
 
-    async def go() -> None:
-        target = StandId(stand)
-        ledger = await SqliteLedger.open(target, _state_root(repo) / target / "ledger.db")
+    async def go() -> ExitCode:
+        target = _require_stand(repo, stand, action="replay")
+        ledger = await SqliteLedger.open(target, _ledger_path(repo, target))
+        out = _out()
         try:
             wanted = frozenset(kinds.split(",")) if kinds else None
             for envelope in await ledger.read(kinds=wanted):
                 if as_json:
-                    print(json.dumps(json.loads(envelope.model_dump_json())))
+                    out.json(envelope.model_dump(mode="json"))
                 else:
-                    print(
-                        f"{envelope.seq:>5} {envelope.at:%H:%M:%S} "
-                        f"{envelope.actor!s:<24} {envelope.kind}"
-                    )
+                    out.line(render.replay_line(envelope))
         finally:
             await ledger.close()
+        return ExitCode.OK
 
-    asyncio.run(go())
+    _run(go)
 
 
 @app.command
 def watch(*, repo: Path = Path(), stand: str | None = None) -> None:
-    """Live dashboard: workstream lanes, conflicts, leases, the train."""
+    """Live dashboard: workstream lanes, conflicts, leases, the train, the heat map."""
     from lumberjack.tui.dashboard import run_dashboard
 
-    target = StandId(stand) if stand else _latest_stand(repo)
-    if target is None:
-        print("no stands found")
-        return
+    target = _require_stand(repo, stand, action="watch")
     run_dashboard(repo=repo, stand=target, state_root=_state_root(repo))
 
 
@@ -677,14 +791,14 @@ def serve(*, repo: Path = Path(), stand: str | None = None, transport: str = "st
     """Serve the coordination toolset over MCP so external agents can join a stand."""
     from lumberjack.server.mcp import serve_stand
 
-    target = StandId(stand) if stand else _latest_stand(repo)
-    if target is None:
-        print("no stands found; start one with `lj run`")
-        return
+    target = _require_stand(repo, stand, action="serve")
     asyncio.run(serve_stand(repo=repo, stand=target, transport=transport))
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s", force=True
+    )
     app()
 
 
