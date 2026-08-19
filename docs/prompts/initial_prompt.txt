@@ -1,0 +1,27 @@
+I want to make an AI agent harness that specializes in orchestrating multiple 
+agents within Git worktrees 
+
+The idea is:
+
+1. Have a swarm of N-number of agents work on a single codebase, all within 
+their own parallel worktrees
+2. Have an "awareness" of work -- especially if 2 agents are working on the same file  
+
+For 2:
+I imagine this could either be with:
+(a) a middle-manager agent that manages the work between agents, such that agent A works on worktree A, 
+agent B works on worktree B, agent C (manager) keeps track of related files to orchestrate the others 
+(b) allow agents to directly share notes or talk together about their changes between worktrees, 
+such that agent A works on worktree A, agent B works on worktree B, and maybe they coordinate/collaborate 
+via some shared notepad, or if there is some way to have the 2 agents talk directly
+
+Please do this:
+Run "git init" in this directory to setup a git repo
+Write a spec with your best ideas on the above
+
+Keep in mind the level of quality we want:
+
+* Fully type driven development 
+* Design the API holistically and fully upfront
+* PydanticAI for agenting tooling 
+* uv for build, ruff for linting, ty for typing

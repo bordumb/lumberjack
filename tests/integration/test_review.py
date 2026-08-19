@@ -8,7 +8,7 @@ from lumberjack.core.tasks import record_transition
 from lumberjack.domain.accord import Defer
 from lumberjack.domain.conflict import ConflictedFile, ConflictReport, ConflictSource, Severity
 from lumberjack.domain.events import ConflictDetected
-from lumberjack.domain.task import Running
+from lumberjack.domain.task import Assigned, Running
 from lumberjack.ids import ConflictId, new_conflict_id
 
 
@@ -91,7 +91,8 @@ async def test_an_unresolved_comment_keeps_the_work_out_of_the_train(
     tip = await services.git.commit_all(workstream.worktree, "work")
     assert tip is not None
     task = services.projections.tasks[workstream.task]
-    running = task.start(services.clock.now()) if not isinstance(task, Running) else task
+    assert isinstance(task, Assigned | Running)
+    running = task if isinstance(task, Running) else task.start(services.clock.now())
     await record_transition(services.ledger, services.projections, running.submit(tip))
     await services.train.request(workstream.workstream_id, tip)
 

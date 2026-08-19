@@ -163,3 +163,49 @@ async def test_coordination_is_recorded_in_the_ledger(services: Services) -> Non
     assert "worktree_delta" in kinds
     assert "workstream_landed" in kinds
     assert any(note.body.startswith("alpha now") for note in services.projections.notes)
+
+
+async def test_a_bounced_task_is_run_again_rather_than_orphaned(
+    services: Services,
+) -> None:
+    """The train hands bounced work back; somebody has to pick it up.
+
+    Without this the task sits in Running with no worker attached, the scheduler sees
+    nothing runnable, and the stand reports success with the work missing -- which is
+    the worst shape a failure can take here.
+    """
+    from lumberjack.adapters.uv_gate import CommandGate
+
+    attempts: dict[str, int] = {}
+
+    def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        prompt = "".join(str(item) for item in messages if isinstance(item, ModelRequest))
+        key = "task-alpha" if "task-alpha" in prompt else "task-gamma"
+        index = _turns(messages)
+        if index == 0:
+            attempts[key] = attempts.get(key, 0) + 1
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "write_file",
+                        {"path": "pkg/core.py", "content": body(alpha=111 + attempts[key])},
+                    )
+                ]
+            )
+        done = next(tool.name for tool in info.output_tools if "Completed" in tool.name)
+        return ModelResponse(parts=[ToolCallPart(done, {"summary": "done", "touched": []})])
+
+    supervisor = Supervisor(services=services)
+    # A gate that always fails, so every entry bounces until the limit stops it.
+    services.train.gate = CommandGate(commands=(("false",),))
+    services.train.config = services.config.model_copy(update={"bounce_limit": 2})
+
+    assert supervisor.worker_agent is not None
+    with supervisor.worker_agent.override(model=FunctionModel(respond)):
+        outcome = await supervisor.run("raise the constants", plan=a_plan())
+
+    assert outcome.status == "partial"
+    assert sorted(outcome.blocked) == ["task-alpha", "task-gamma"]
+    assert all(count > 1 for count in attempts.values()), (
+        f"each task should have been re-run after bouncing, got {attempts}"
+    )

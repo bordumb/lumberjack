@@ -269,10 +269,25 @@ class Supervisor:
                     continue
                 await self._launch(spec, base)
 
+            # A bounced task returns to Running with the failure attached, but nothing
+            # re-invokes its worker: the train hands the work back and the supervisor
+            # has to pick it up. Without this a bounce silently orphans the task and
+            # the stand reports success with the work missing.
+            for orphan in self._orphaned(graph):
+                await self._relaunch(orphan)
+
             if not self._running:
-                if self._all_terminal(graph):
-                    return
-                # Nothing runnable and nothing running: the remainder is blocked.
+                # The stand is not over while work is still queued to land. Draining
+                # here rather than trusting the periodic train loop is what makes the
+                # end of a run deterministic instead of a race with a timer.
+                await self.services.train.drain()
+                if self.services.train.queue:
+                    continue
+                if graph.ready(self.services.projections.completed_tasks()) and not all(
+                    self._already_handled(spec.task_id) for spec in graph.tasks
+                ):
+                    continue
+                # Nothing running, nothing queued, nothing runnable: the rest is blocked.
                 return
 
             done, _ = await asyncio.wait(
@@ -283,6 +298,34 @@ class Supervisor:
                     if task is finished:
                         self._running.pop(workstream, None)
             await self.services.train.drain()
+
+    def _orphaned(self, graph: TaskGraph) -> tuple[WorkstreamId, ...]:
+        """Tasks left Running with nobody running them -- bounced and handed back."""
+        found: list[WorkstreamId] = []
+        for spec in graph.tasks:
+            state = self.services.projections.tasks.get(spec.task_id)
+            if not isinstance(state, Running):
+                continue
+            if state.workstream in self._running:
+                continue
+            if len(self._running) >= self.services.config.max_parallel:
+                break
+            found.append(state.workstream)
+        return tuple(found)
+
+    async def _relaunch(self, workstream_id: WorkstreamId) -> None:
+        """Re-run a worker in the worktree it already has, keeping its work."""
+        workstream = self.services.projections.workstreams.get(workstream_id)
+        sensor = self.sensors.get(workstream_id)
+        if workstream is None or sensor is None:
+            return
+        state = self.services.projections.tasks.get(workstream.task)
+        if not isinstance(state, Running):
+            return
+        self._running[workstream_id] = asyncio.create_task(
+            self._work(workstream, state.spec, sensor),
+            name=f"lj-worker-{workstream_id}-retry{state.attempts}",
+        )
 
     def _already_handled(self, task_id: TaskId) -> bool:
         state = self.services.projections.tasks.get(task_id)
@@ -336,11 +379,17 @@ class Supervisor:
 
     async def _work(self, workstream: Workstream, spec: TaskSpec, sensor: WorktreeSensor) -> None:
         services = self.services
+        # Carry the attempt count forward. Starting from zero on every launch means a
+        # bounced task can never reach the bounce limit, and the train hands it back
+        # for ever.
+        previous = services.projections.tasks.get(spec.task_id)
         running = Running(
             spec=spec,
             agent=workstream.agent,
             workstream=workstream.workstream_id,
             started_at=services.clock.now(),
+            attempts=previous.attempts if isinstance(previous, Running) else 0,
+            last_gate=previous.last_gate if isinstance(previous, Running) else None,
         )
         await record_transition(
             services.ledger, services.projections, running, actor=workstream.agent

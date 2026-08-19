@@ -64,6 +64,13 @@ include = ["src", "tests"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # asyncio finalizes subprocess transports at collection time, in whatever test
+    # happens to be running. The suite drives a lot of real git, so this surfaced as a
+    # failure that moved between unrelated tests. Every process the harness owns is
+    # terminated explicitly; this is the interpreter tidying up after them.
+    "ignore::ResourceWarning",
+]
 markers = ["live: hits a real model provider; opt in with -m live"]
 addopts = "-m 'not live'"
