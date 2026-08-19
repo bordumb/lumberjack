@@ -23,7 +23,15 @@ from lumberjack.core.projections import Projections
 from lumberjack.domain.events import StandHalted
 from lumberjack.domain.task import TaskSpec
 from lumberjack.domain.workstream import ArbitrationMode, StandConfig
-from lumberjack.ids import CommitSha, StandId, TaskId
+from lumberjack.ids import (
+    CommentId,
+    CommitSha,
+    ConflictId,
+    StandId,
+    TaskId,
+    WorkstreamId,
+    repo_path,
+)
 from lumberjack.ports.git import GitError
 from lumberjack.stand import Stand
 
@@ -236,6 +244,118 @@ async def _resume_bases(repo: Path, stand: str, plan: Plan) -> dict[TaskId, Comm
         except GitError:
             continue
     return found
+
+
+async def _open_stand(repo: Path, stand: StandId):  # noqa: ANN202 - internal helper
+    """Open a stand's ledger for writing, with projections hydrated."""
+    from lumberjack.adapters.ast_indexer import AstIndexer
+    from lumberjack.adapters.projecting import ProjectingLedger
+    from lumberjack.adapters.uv_gate import NullGate
+    from lumberjack.core.services import Services
+
+    config = _load_config(repo)
+    projections = Projections(stand=stand)
+    inner = await SqliteLedger.open(stand, _state_root(repo) / stand / "ledger.db")
+    ledger = ProjectingLedger(inner=inner, projections=projections)
+    await projections.hydrate(ledger)
+    services = Services.wire(
+        stand=stand,
+        config=config,
+        clock=SystemClock(),
+        git=GitCli(repo=repo),
+        ledger=ledger,
+        indexer=AstIndexer(),
+        gate=NullGate(),
+        projections=projections,
+    )
+    return services, inner
+
+
+@app.command
+def comment(
+    body: str,
+    *,
+    file: str,
+    line: int,
+    repo: Path = Path(),
+    stand: str | None = None,
+    line_end: int | None = None,
+    workstream: str | None = None,
+    conflict: str | None = None,
+    side: str = "additions",
+) -> None:
+    """Leave a review comment on a line, addressed into the swarm.
+
+    On a workstream it reaches that agent. On a conflict it reaches both participants,
+    because a conflict is a dispute and both sides have to hear it. Either way the
+    comment blocks that work from landing until it is resolved.
+    """
+
+    async def go() -> None:
+        target = StandId(stand) if stand else _latest_stand(repo)
+        if target is None:
+            print("no stands found")
+            raise SystemExit(3)
+        services, inner = await _open_stand(repo, target)
+        try:
+            posted = await services.review.comment(
+                body=body,
+                file=repo_path(file),
+                line_start=line,
+                line_end=line_end,
+                side=side,
+                workstream=WorkstreamId(workstream) if workstream else None,
+                conflict_id=ConflictId(conflict) if conflict else None,
+            )
+            recipients = services.review._recipients(posted)
+            print(f"{posted.comment_id} on {posted.file}:{posted.lines}")
+            print("delivered to: " + (", ".join(recipients) or "nobody active"))
+        finally:
+            await inner.close()
+
+    asyncio.run(go())
+
+
+@app.command
+def resolve(comment_id: str, *, repo: Path = Path(), stand: str | None = None) -> None:
+    """Mark a review comment resolved, unblocking the workstream it was holding."""
+
+    async def go() -> None:
+        target = StandId(stand) if stand else _latest_stand(repo)
+        if target is None:
+            print("no stands found")
+            raise SystemExit(3)
+        services, inner = await _open_stand(repo, target)
+        try:
+            await services.review.resolve(CommentId(comment_id))
+            print(f"resolved {comment_id}")
+        finally:
+            await inner.close()
+
+    asyncio.run(go())
+
+
+@app.command
+def comments(
+    *, repo: Path = Path(), stand: str | None = None, include_resolved: bool = False
+) -> None:
+    """List review comments and whether they are still holding work back."""
+
+    async def go() -> None:
+        target = StandId(stand) if stand else _latest_stand(repo)
+        if target is None:
+            print("no stands found")
+            raise SystemExit(3)
+        projections = await _replay(repo, target)
+        found = [item for item in projections.comments.values() if all or not item.resolved]
+        if not found:
+            print("no open review comments")
+            return
+        for item in found:
+            state = "resolved" if item.resolved else "open"
+            print(f"  {item.comment_id}  [{state}]  {item.render()}")
+
+    asyncio.run(go())
 
 
 @app.command

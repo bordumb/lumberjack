@@ -18,6 +18,7 @@ __all__ = [
     "AgentId",
     "ArtifactRef",
     "ChannelId",
+    "CommentId",
     "CommitSha",
     "ConflictId",
     "ContractId",
@@ -36,6 +37,7 @@ __all__ = [
     "new_accord_id",
     "new_agent_id",
     "new_channel_id",
+    "new_comment_id",
     "new_conflict_id",
     "new_contract_id",
     "new_lease_id",
@@ -61,6 +63,7 @@ MessageId = NewType("MessageId", str)
 NoteId = NewType("NoteId", str)
 ProposalId = NewType("ProposalId", str)
 ArtifactRef = NewType("ArtifactRef", str)
+CommentId = NewType("CommentId", str)
 
 Seq = NewType("Seq", int)
 """Total-order position in the ledger.  Assigned by the ledger, never by callers."""
@@ -119,6 +122,10 @@ def new_note_id() -> NoteId:
 
 def new_proposal_id() -> ProposalId:
     return ProposalId(_short("prop"))
+
+
+def new_comment_id() -> CommentId:
+    return CommentId(_short("comment"))
 
 
 _WINDOWS_SEP = re.compile(r"\\+")

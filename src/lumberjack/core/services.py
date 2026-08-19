@@ -14,6 +14,7 @@ from lumberjack.core.digest import DigestBuilder
 from lumberjack.core.oracle import ConflictOracle
 from lumberjack.core.projections import Projections
 from lumberjack.core.resolve import RulingExecutor
+from lumberjack.core.review import ReviewDesk
 from lumberjack.core.train import MergeTrain
 from lumberjack.domain.workstream import StandConfig
 from lumberjack.ids import StandId
@@ -43,6 +44,7 @@ class Services:
     digest: DigestBuilder
     train: MergeTrain
     executor: RulingExecutor
+    review: ReviewDesk
 
     @classmethod
     def wire(
@@ -87,6 +89,7 @@ class Services:
                 clock=clock,
                 config=config,
             ),
+            review=ReviewDesk(ledger=ledger, projections=state, bus=bus, clock=clock),
             executor=RulingExecutor(
                 ledger=ledger,
                 projections=state,

@@ -43,6 +43,8 @@ from lumberjack.domain.events import (
     NotePosted,
     ProtocolViolation,
     ResolutionApplied,
+    ReviewCommentPosted,
+    ReviewCommentResolved,
     StandHalted,
     StandStarted,
     TaskAssigned,
@@ -52,13 +54,14 @@ from lumberjack.domain.events import (
     WorktreeDelta,
 )
 from lumberjack.domain.message import Message
-from lumberjack.domain.note import Note
+from lumberjack.domain.note import Note, ReviewComment
 from lumberjack.domain.symbols import RepoMap, SymbolRef
 from lumberjack.domain.task import Landed, Pending, Task, TaskSpec
 from lumberjack.domain.workstream import StandConfig, Workstream
 from lumberjack.ids import (
     AgentId,
     ChannelId,
+    CommentId,
     CommitSha,
     ConflictId,
     ContractId,
@@ -122,6 +125,7 @@ class Projections:
     rulings: list[ResolutionApplied] = field(default_factory=list)
 
     notes: list[Note] = field(default_factory=list)
+    comments: dict[CommentId, ReviewComment] = field(default_factory=dict)
     messages: list[tuple[Seq, Message]] = field(default_factory=list)
     read_cursor: dict[AgentId, Seq] = field(default_factory=dict)
 
@@ -207,6 +211,14 @@ class Projections:
                 self.rulings.append(payload)
             case NotePosted():
                 self.notes.append(payload.note)
+            case ReviewCommentPosted():
+                self.comments[payload.comment.comment_id] = payload.comment
+            case ReviewCommentResolved():
+                existing = self.comments.get(payload.comment_id)
+                if existing is not None:
+                    self.comments[payload.comment_id] = existing.model_copy(
+                        update={"resolved": True}
+                    )
             case MessageSent():
                 self.messages.append((envelope.seq, payload.message))
             case MessageRead():
@@ -319,6 +331,23 @@ class Projections:
                 rationale=lease.claim.rationale,
             )
         return tuple(activity.values())
+
+    def comments_for(
+        self, workstream: WorkstreamId, *, unresolved_only: bool = True
+    ) -> tuple[ReviewComment, ...]:
+        """Human comments addressed to this workstream, or scoped to files it touched."""
+        touched = set(self.observed_paths(workstream))
+        return tuple(
+            comment
+            for comment in self.comments.values()
+            if (not unresolved_only or not comment.resolved)
+            and (comment.workstream == workstream or comment.file in touched)
+        )
+
+    def comments_on(self, conflict: ConflictId) -> tuple[ReviewComment, ...]:
+        return tuple(
+            comment for comment in self.comments.values() if comment.conflict_id == conflict
+        )
 
     def contracts_for(self, task: TaskId) -> tuple[Contract, ...]:
         return tuple(

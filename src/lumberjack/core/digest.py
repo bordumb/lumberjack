@@ -15,7 +15,7 @@ from lumberjack.core.projections import PeerActivity, Projections
 from lumberjack.domain.conflict import ConflictReport, Severity
 from lumberjack.domain.contract import Contract
 from lumberjack.domain.message import Message
-from lumberjack.domain.note import Note
+from lumberjack.domain.note import Note, ReviewComment
 from lumberjack.domain.workstream import DriftStatus, StandConfig
 from lumberjack.ids import WorkstreamId
 from lumberjack.ports.clock import Clock
@@ -34,6 +34,7 @@ class AwarenessDigest(BaseModel):
     notes: tuple[Note, ...] = ()
     contracts: tuple[Contract, ...] = ()
     inbox: tuple[Message, ...] = ()
+    comments: tuple[ReviewComment, ...] = ()
     drift: DriftStatus = DriftStatus()
     violations: tuple[str, ...] = ()
 
@@ -43,7 +44,7 @@ class AwarenessDigest(BaseModel):
 
     @property
     def quiet(self) -> bool:
-        return not (self.peers or self.conflicts or self.inbox or self.violations)
+        return not (self.peers or self.conflicts or self.inbox or self.violations or self.comments)
 
 
 @dataclass(slots=True)
@@ -68,6 +69,7 @@ class DigestBuilder:
             notes=self.projections.notes_matching(workstream, self.config.digest_note_cap),
             contracts=(self.projections.contracts_for(found.task) if found is not None else ()),
             inbox=self.projections.unread_for(agent) if agent is not None else (),
+            comments=self.projections.comments_for(workstream, unresolved_only=True),
             drift=found.drift if found is not None else DriftStatus(),
             violations=tuple(
                 f"{item.violation.code}: {item.violation.detail}"
@@ -87,6 +89,13 @@ def render_digest(digest: AwarenessDigest, config: StandConfig) -> str:
 
     sections: list[tuple[str, list[str]]] = []
 
+    if digest.comments:
+        sections.append(
+            (
+                "HUMAN REVIEW -- unresolved, and your work cannot land until it is",
+                [f"- {item.render()}" for item in digest.comments[:8]],
+            )
+        )
     if digest.conflicts:
         sections.append(
             (

@@ -17,7 +17,7 @@ from lumberjack.domain.conflict import ConflictReport, Severity
 from lumberjack.domain.contract import AmendmentProposal, Contract
 from lumberjack.domain.gate import GateReport
 from lumberjack.domain.message import Message
-from lumberjack.domain.note import Note
+from lumberjack.domain.note import Note, ReviewComment
 from lumberjack.domain.symbols import SymbolRef
 from lumberjack.domain.task import Task, TaskSpec
 from lumberjack.domain.workstream import StandConfig, Workstream
@@ -25,6 +25,7 @@ from lumberjack.ids import (
     AccordId,
     AgentId,
     ChannelId,
+    CommentId,
     CommitSha,
     ConflictId,
     LeaseId,
@@ -60,6 +61,8 @@ __all__ = [
     "NegotiationTurn",
     "NotePosted",
     "ProtocolViolation",
+    "ReviewCommentPosted",
+    "ReviewCommentResolved",
     "StandHalted",
     "StandStarted",
     "TaskAssigned",
@@ -263,6 +266,18 @@ class NotePosted(_Event):
     note: Note
 
 
+class ReviewCommentPosted(_Event):
+    kind: Literal["review_comment_posted"] = "review_comment_posted"
+    comment: ReviewComment
+    notified: tuple[AgentId, ...] = ()
+
+
+class ReviewCommentResolved(_Event):
+    kind: Literal["review_comment_resolved"] = "review_comment_resolved"
+    comment_id: CommentId
+    by: AgentId
+
+
 class MessageSent(_Event):
     kind: Literal["message_sent"] = "message_sent"
     message: Message
@@ -352,6 +367,8 @@ EventPayload = Annotated[
     | DirectiveIssued
     | ResolutionApplied
     | NotePosted
+    | ReviewCommentPosted
+    | ReviewCommentResolved
     | MessageSent
     | MessageRead
     | ContractFrozen

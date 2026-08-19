@@ -115,7 +115,16 @@ class MergeTrain:
                 why="workstream is not awaiting integration",
             )
 
-        # 1. Oracle pre-check.  Never burn a gate run on a merge git has already refused.
+        # 1. A person is still waiting on this. Nothing else in the queue outranks that.
+        unresolved = self.projections.comments_for(workstream, unresolved_only=True)
+        if unresolved:
+            listed = "; ".join(item.render() for item in unresolved[:3])
+            return await self._bounce(
+                task,
+                why=f"{len(unresolved)} unresolved review comment(s): {listed}",
+            )
+
+        # 2. Oracle pre-check.  Never burn a gate run on a merge git has already refused.
         clean, conflicted = await self.oracle.would_land_cleanly(workstream)
         if not clean:
             return await self._bounce(
@@ -124,7 +133,7 @@ class MergeTrain:
                 conflicted=conflicted,
             )
 
-        # 2. Rebase onto the current integration head.
+        # 3. Rebase onto the current integration head.
         head = self.projections.integration_head
         if head is not None:
             rebase = await self.git.rebase(found.worktree, head)
@@ -135,13 +144,13 @@ class MergeTrain:
                     conflicted=rebase.conflicted,
                 )
 
-        # 3. Gate.
+        # 4. Gate.
         report = await self.gate.run(found.worktree)
         await self.ledger.append(GateRun(workstream=workstream, report=report))
         if not report.passed:
             return await self._bounce(task, why=report.render(600), report=report)
 
-        # 4. Merge into integration.
+        # 5. Merge into integration.
         merged = await self.git.merge(
             found.worktree.branch,
             self.projections.integration_branch,
